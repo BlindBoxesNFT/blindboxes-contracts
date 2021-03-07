@@ -26,31 +26,45 @@ contract NFTMaster is Ownable, AMBMediator {
     event nftWithdraw(bytes32 _msgId, address _who, address _tokenAddress, uint256 _tokenId);
     event failedMessageFixed(bytes32 _msgId, address _recipient, address _tokenAddress, uint256 _tokenId);
 
-    struct NFTOwner {
-        address owner;
-        uint256 index;
-    }
+    uint256 public nextNFTId;
+    uint256 public nextCollectionId;
 
-    mapping(address => mapping(uint256 => NFTOwner)) public nftOwnerMap;
-
-    struct NFTInfo {
+    struct NFT {
         address tokenAddress;
         uint256 tokenId;
+        address owner;
+        uint256 price;
+        uint256 collectionId;
+        uint256 indexInCollection;
     }
 
-    mapping(address => NFTInfo[]) public nftInfoMap;
+    // nftId => NFT
+    mapping(uint256 => NFT) public allNFTs;
+
+    // owner => nftId[]
+    mapping(address => uint256[]) public nftsByOwner;
 
     struct Collection {
         address owner;
         string name;
         uint256 size;
-        address[] collaborators;
         bool willAcceptBLES;
         bool isFeatured;
+        bool isPublished;
+        address[] collaborators;
     }
 
-    Collection[] public allCollections;
+    // collectionId => Collection
+    mapping(uint256 => Collection) public allCollections;
+
+    // owner => collectionId[]
     mapping(address => uint256[]) public collectionsByOwner;
+
+    // collectionId => who => true/false
+    mapping(uint256 => mapping(address => bool)) isCollaborator;
+
+    // collectionId => nftId[]
+    mapping(uint256 => uint256[]) public nftsByCollectionId;
 
     constructor(IPOSDAORandom _randomContract) public {
         require(_randomContract != IPOSDAORandom(0));
@@ -85,25 +99,35 @@ contract NFTMaster is Ownable, AMBMediator {
         return false;
     }
 
+    function _generateNextNFTId() private returns(uint256) {
+        return ++nextNFTId;
+    }
+
+    function _generateNextCollectionId() private returns(uint256) {
+        return ++nextCollectionId;
+    }
+
     function deposit(address from_, address tokenAddress_, uint256 tokenId_) external {
         require(msg.sender == address(bridgeContract()));
         require(bridgeContract().messageSender() == mediatorContractOnOtherSide());
 
-        NFTInfo memory info;
-        info.tokenAddress = tokenAddress_;
-        info.tokenId = tokenId_;
-        nftInfoMap[from_].push(info);
+        NFT memory nft;
+        nft.tokenAddress = tokenAddress_;
+        nft.tokenId = tokenId_;
+        nft.owner = from_;
+        nft.collectionId = 0;
+        nft.indexInCollection = 0;
 
-        NFTOwner memory nftOwner;
-        nftOwner.owner = from_;
-        nftOwner.index = nftInfoMap[from_].length - 1;
-        nftOwnerMap[tokenAddress_][tokenId_] = nftOwner;
+        uint256 nftId = _generateNextNFTId();
+
+        allNFTs[nftId] = nft;
+        nftsByOwner[from_].push(nftId);
 
         bytes32 msgId = messageId();
         emit nftDeposit(msgId, from_, tokenAddress_, tokenId_);
     }
 
-    function withdraw(address to_, address tokenAddress_, uint256 tokenId_) public returns(bytes32) {
+    function withdraw(address to_, address tokenAddress_, uint256 tokenId_) external returns(bytes32) {
     }
 
     function fixFailedMessage(bytes32 _msgId) external {
@@ -114,19 +138,64 @@ contract NFTMaster is Ownable, AMBMediator {
         uint256 size_,
         bool willAcceptBLES_,
         address[] calldata collaborators_
-    ) public {
+    ) external {
         Collection memory collection;
         collection.owner = msg.sender;
         collection.name = name_;
         collection.size = size_;
         collection.willAcceptBLES = willAcceptBLES_;
         collection.isFeatured = false;
+        collection.isPublished = false;
         collection.collaborators = collaborators_;
 
-        allCollections.push(collection);
-        collectionsByOwner[msg.sender].push(allCollections.length - 1);
+        uint256 collectionId = _generateNextCollectionId();
+
+        allCollections[collectionId] = collection;
+        collectionsByOwner[msg.sender].push(collectionId);
+
+        for (uint256 i = 0; i < collaborators_.length; ++i) {
+            isCollaborator[collectionId][collaborators_[i]] = true;
+        }
     }
 
-    function addNFTToCollection(uint256 collectionIndex, address tokenAddress_, uint256 tokenId_) public {
+    function addNFTToCollection(uint256 nftId_, uint256 collectionId_, uint256 price_) external {
+        require(allNFTs[nftId_].owner == _msgSender(), "Only owner can add");
+        require(allCollections[collectionId_].owner == _msgSender() ||
+                isCollaborator[collectionId_][_msgSender()], "Needs owner or collaborator");
+        require(allNFTs[nftId_].collectionId == 0, "Already added");
+        require(!allCollections[collectionId_].isPublished, "Collection already published");
+        require(nftsByCollectionId[collectionId_].length < allCollections[collectionId_].size,
+                "collection full");
+
+        allNFTs[nftId_].price = price_;
+        allNFTs[nftId_].collectionId = collectionId_;
+        allNFTs[nftId_].indexInCollection = nftsByCollectionId[collectionId_].length;
+
+        // Push to nftsByCollectionId.
+        nftsByCollectionId[collectionId_].push(nftId_);
+    }
+
+    function removeNFTFromCollection(uint256 nftId_, uint256 collectionId_) external {
+        require(allNFTs[nftId_].owner == _msgSender() ||
+                allCollections[collectionId_].owner == _msgSender(),
+                "Only NFT owner or collection owner can remove");
+        require(allNFTs[nftId_].collectionId == collectionId_, "NFT not in collection");
+        require(!allCollections[collectionId_].isPublished, "Collection already published");
+
+        allNFTs[nftId_].collectionId = 0;
+
+        // Removes from nftsByCollectionId
+        uint256 index = allNFTs[nftId_].indexInCollection;
+        uint256 lastNFTId = nftsByCollectionId[collectionId_][nftsByCollectionId[collectionId_].length - 1];
+
+        nftsByCollectionId[collectionId_][index] = lastNFTId;
+        allNFTs[lastNFTId].indexInCollection = index;
+        nftsByCollectionId[collectionId_].pop();
+    }
+
+    function publishCollection(uint256 collectionId_) public {
+        require(allCollections[collectionId_].owner == _msgSender(), "Only owner can publish");
+
+        allCollections[collectionId_].isPublished = true;
     }
 }
