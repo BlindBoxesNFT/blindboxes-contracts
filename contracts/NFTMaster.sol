@@ -7,6 +7,8 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 
+import "./interfaces/INFTHolder.sol";
+
 import "./interfaces/IPOSDAORandom.sol";
 import "./AMBMediator.sol";
 
@@ -21,6 +23,10 @@ contract NFTMaster is Ownable, AMBMediator {
     uint256 private _seed;
     uint256 private _seedLastBlock;
     uint256 private _updateInterval;
+
+    mapping (bytes32 => address) private msgTokenAddress;
+    mapping (bytes32 => uint256) private msgTokenId;
+    mapping (bytes32 => address) private msgRecipient;
 
     event nftDeposit(bytes32 _msgId, address _who, address _tokenAddress, uint256 _tokenId);
     event nftWithdraw(bytes32 _msgId, address _who, address _tokenAddress, uint256 _tokenId);
@@ -43,6 +49,9 @@ contract NFTMaster is Ownable, AMBMediator {
 
     // owner => nftId[]
     mapping(address => uint256[]) public nftsByOwner;
+
+    // tokenAddress => tokenId => nftId
+    mapping(address => mapping(uint256 => uint256)) nftMap;
 
     struct Collection {
         address owner;
@@ -118,7 +127,14 @@ contract NFTMaster is Ownable, AMBMediator {
         nft.collectionId = 0;
         nft.indexInCollection = 0;
 
-        uint256 nftId = _generateNextNFTId();
+        uint256 nftId;
+
+        if (nftMap[tokenAddress_][tokenId_] > 0) {
+            nftId = nftMap[tokenAddress_][tokenId_];
+        } else {
+            nftId = _generateNextNFTId();
+            nftMap[tokenAddress_][tokenId_] = nftId;
+        }
 
         allNFTs[nftId] = nft;
         nftsByOwner[from_].push(nftId);
@@ -127,10 +143,46 @@ contract NFTMaster is Ownable, AMBMediator {
         emit nftDeposit(msgId, from_, tokenAddress_, tokenId_);
     }
 
-    function withdraw(address to_, address tokenAddress_, uint256 tokenId_) external returns(bytes32) {
+    function withdraw(uint256 nftId_) external returns(bytes32) {
+        require(allNFTs[nftId_].owner == msg.sender && allNFTs[nftId_].collectionId == 0, "Not owned");
+        allNFTs[nftId_].owner = address(0);
+
+        address tokenAddress = allNFTs[nftId_].tokenAddress;
+        uint256 tokenId = allNFTs[nftId_].tokenId;
+
+        bytes4 methodSelector = INFTHolder(address(0)).withdraw.selector;
+        bytes memory data = abi.encodeWithSelector(methodSelector, msg.sender, tokenAddress, tokenId);
+        bytes32 msgId = bridgeContract().requireToPassMessage(
+            mediatorContractOnOtherSide(),
+            data,
+            requestGasLimit
+        );
+
+        msgTokenAddress[msgId] = tokenAddress;
+        msgTokenId[msgId] = tokenId;
+        msgRecipient[msgId] = msg.sender;
+
+        emit nftWithdraw(msgId, msg.sender, tokenAddress, tokenId);
+
+        return msgId;
     }
 
     function fixFailedMessage(bytes32 _msgId) external {
+        require(msg.sender == address(bridgeContract()));
+        require(bridgeContract().messageSender() == mediatorContractOnOtherSide());
+        require(!messageFixed[_msgId]);
+
+        address recipient = msgRecipient[_msgId];
+        address tokenAddress = msgTokenAddress[_msgId];
+        uint256 tokenId = msgTokenId[_msgId];
+
+        messageFixed[_msgId] = true;
+
+        // Revert
+        uint256 nftId = nftMap[tokenAddress][tokenId];
+        allNFTs[nftId].owner = recipient;
+
+        emit failedMessageFixed(_msgId, recipient, tokenAddress, tokenId);
     }
 
     function createCollection(

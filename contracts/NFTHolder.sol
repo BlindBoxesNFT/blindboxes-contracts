@@ -51,17 +51,17 @@ contract NFTHolder is Ownable, AMBMediator {
     }
 
     function fixFailedMessage(bytes32 _msgId) external {
-      require(msg.sender == address(bridgeContract()));
-      require(bridgeContract().messageSender() == mediatorContractOnOtherSide());
-      require(!messageFixed[_msgId]);
+        require(msg.sender == address(bridgeContract()));
+        require(bridgeContract().messageSender() == mediatorContractOnOtherSide());
+        require(!messageFixed[_msgId]);
 
-      address recipient = msgRecipient[_msgId];
-      address tokenAddress = msgTokenAddress[_msgId];
-      uint256 tokenId = msgTokenId[_msgId];
+        address recipient = msgRecipient[_msgId];
+        address tokenAddress = msgTokenAddress[_msgId];
+        uint256 tokenId = msgTokenId[_msgId];
 
-      messageFixed[_msgId] = true;
-      IERC721(tokenAddress).safeTransferFrom(address(this), recipient, tokenId);
+        messageFixed[_msgId] = true;
+        IERC721(tokenAddress).safeTransferFrom(address(this), recipient, tokenId);
 
-      emit failedMessageFixed(_msgId, recipient, tokenAddress, tokenId);
+        emit failedMessageFixed(_msgId, recipient, tokenAddress, tokenId);
     }
 }
