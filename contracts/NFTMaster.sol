@@ -7,30 +7,26 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 
-import "./interfaces/INFTHolder.sol";
+import "@chainlink/contracts/src/v0.6/VRFConsumerBase.sol";
 
-import "./interfaces/IPOSDAORandom.sol";
-import "./AMBMediator.sol";
-
+import "./interfaces/IUniswapV2Router02.sol";
 
 // This contract is owned by Timelock.
-contract NFTMaster is Ownable, AMBMediator {
+contract NFTMaster is Ownable, VRFConsumerBase {
 
     using SafeERC20 for IERC20;
-    using SafeMath for uint256;
 
-    IPOSDAORandom private _posdaoRandomContract; // address of RandomAuRa contract
-    uint256 private _seed;
-    uint256 private _seedLastBlock;
-    uint256 private _updateInterval;
+    event nftDeposit(address _who, address _tokenAddress, uint256 _tokenId);
+    event nftWithdraw(address _who, address _tokenAddress, uint256 _tokenId);
 
-    mapping (bytes32 => address) private msgTokenAddress;
-    mapping (bytes32 => uint256) private msgTokenId;
-    mapping (bytes32 => address) private msgRecipient;
+    IERC20 wETH;
+    IERC20 baseToken;
+    IERC20 linkToken;
 
-    event nftDeposit(bytes32 _msgId, address _who, address _tokenAddress, uint256 _tokenId);
-    event nftWithdraw(bytes32 _msgId, address _who, address _tokenAddress, uint256 _tokenId);
-    event failedMessageFixed(bytes32 _msgId, address _recipient, address _tokenAddress, uint256 _tokenId);
+    bytes32 public keyHash;
+    uint256 public fee = 1e17;  // 0.1 LINK
+
+    IUniswapV2Router02 public router;
 
     uint256 public nextNFTId;
     uint256 public nextCollectionId;
@@ -51,16 +47,24 @@ contract NFTMaster is Ownable, AMBMediator {
     mapping(address => uint256[]) public nftsByOwner;
 
     // tokenAddress => tokenId => nftId
-    mapping(address => mapping(uint256 => uint256)) nftMap;
+    mapping(address => mapping(uint256 => uint256)) nftIdMap;
 
     struct Collection {
         address owner;
         string name;
         uint256 size;
+        uint256 totalPrice;
+        uint256 averagePrice;
         bool willAcceptBLES;
         bool isFeatured;
         bool isPublished;
         address[] collaborators;
+
+        // The following are runtime variables
+        uint256 timesToCall;
+        uint256 slotPointerI;
+        uint256 slotPointerJ;
+        uint256 soldCount;
     }
 
     // collectionId => Collection
@@ -75,37 +79,59 @@ contract NFTMaster is Ownable, AMBMediator {
     // collectionId => nftId[]
     mapping(uint256 => uint256[]) public nftsByCollectionId;
 
-    constructor(IPOSDAORandom _randomContract) public {
-        require(_randomContract != IPOSDAORandom(0));
-        _posdaoRandomContract = _randomContract;
-        _seed = _randomContract.currentSeed();
-        _seedLastBlock = block.number;
-        _updateInterval = _randomContract.collectRoundLength();
-        require(_updateInterval != 0);
+    mapping(bytes32 => uint256) public requestIdToCollectionId;
+
+    struct Slot {
+        address owner;
+        uint256 size;
     }
 
-    function useSeed() public {
-        if (_wasSeedUpdated()) {
-            // using updated _seed ...
-        } else {
-            // using _seed ...
-        }
+    // collectionId => Slot[]
+    mapping(uint256 => Slot[]) public slotMap;
+    // collectionId => index => address
+    mapping(uint256 => mapping(uint256 => address)) public slotOwner;
+
+    uint256 public nftPriceFloor = 1e18;  // 1 USDC
+    uint256 public nftPriceCeil = 1e24;  // 1M USDC
+    uint256 public collectionMinimumSize = 10;  // 10 blind boxes
+
+    constructor(
+        IERC20 wETH_,
+        address vrfCoordinator_,
+        IERC20 link_
+    ) VRFConsumerBase(vrfCoordinator_, address(link_)) public {
+        wETH = wETH_;
+        linkToken = link_;
     }
 
-    function _wasSeedUpdated() private returns(bool) {
-        if (block.number - _seedLastBlock <= _updateInterval) {
-            return false;
-        }
+    function setBaseToken(IERC20 baseToken_) external onlyOwner {
+        baseToken = baseToken_;
+    }
 
-        _updateInterval = _posdaoRandomContract.collectRoundLength();
+    function setKeyHash(bytes32 keyHash_) external onlyOwner {
+        keyHash = keyHash_;
+    }
 
-        uint256 remoteSeed = _posdaoRandomContract.currentSeed();
-        if (remoteSeed != _seed) {
-            _seed = remoteSeed;
-            _seedLastBlock = block.number;
-            return true;
-        }
-        return false;
+    function setFee(uint256 fee_) external onlyOwner {
+        fee = fee_;
+    }
+
+    function setUniswapV2Router(IUniswapV2Router02 router_) external {
+        router = router_;
+    }
+
+    function setNFTPriceFloor(uint256 value_) external onlyOwner {
+        require(value_ < nftPriceCeil, "should be higher than floor");
+        nftPriceFloor = value_;
+    }
+
+    function setNFTPriceCeil(uint256 value_) external onlyOwner {
+        require(value_ > nftPriceFloor, "should be higher than floor");
+        nftPriceCeil = value_;
+    }
+
+    function setCollectionMinimumSize(uint256 size_) external onlyOwner {
+        collectionMinimumSize = size_;
     }
 
     function _generateNextNFTId() private returns(uint256) {
@@ -116,73 +142,57 @@ contract NFTMaster is Ownable, AMBMediator {
         return ++nextCollectionId;
     }
 
-    function deposit(address from_, address tokenAddress_, uint256 tokenId_) external {
-        require(msg.sender == address(bridgeContract()));
-        require(bridgeContract().messageSender() == mediatorContractOnOtherSide());
+    function deposit(address tokenAddress_, uint256 tokenId_) external {
+        IERC721(tokenAddress_).safeTransferFrom(_msgSender(), address(this), tokenId_);
 
         NFT memory nft;
         nft.tokenAddress = tokenAddress_;
         nft.tokenId = tokenId_;
-        nft.owner = from_;
+        nft.owner = _msgSender();
         nft.collectionId = 0;
         nft.indexInCollection = 0;
 
         uint256 nftId;
 
-        if (nftMap[tokenAddress_][tokenId_] > 0) {
-            nftId = nftMap[tokenAddress_][tokenId_];
+        if (nftIdMap[tokenAddress_][tokenId_] > 0) {
+            nftId = nftIdMap[tokenAddress_][tokenId_];
         } else {
             nftId = _generateNextNFTId();
-            nftMap[tokenAddress_][tokenId_] = nftId;
+            nftIdMap[tokenAddress_][tokenId_] = nftId;
         }
 
         allNFTs[nftId] = nft;
-        nftsByOwner[from_].push(nftId);
+        nftsByOwner[_msgSender()].push(nftId);
 
-        bytes32 msgId = messageId();
-        emit nftDeposit(msgId, from_, tokenAddress_, tokenId_);
+        emit nftDeposit(_msgSender(), tokenAddress_, tokenId_);
     }
 
-    function withdraw(uint256 nftId_) external returns(bytes32) {
-        require(allNFTs[nftId_].owner == msg.sender && allNFTs[nftId_].collectionId == 0, "Not owned");
+    function _withdraw(uint256 nftId_) private {
         allNFTs[nftId_].owner = address(0);
+        allNFTs[nftId_].collectionId = 0;
 
         address tokenAddress = allNFTs[nftId_].tokenAddress;
         uint256 tokenId = allNFTs[nftId_].tokenId;
 
-        bytes4 methodSelector = INFTHolder(address(0)).withdraw.selector;
-        bytes memory data = abi.encodeWithSelector(methodSelector, msg.sender, tokenAddress, tokenId);
-        bytes32 msgId = bridgeContract().requireToPassMessage(
-            mediatorContractOnOtherSide(),
-            data,
-            requestGasLimit
-        );
+        IERC721(tokenAddress).safeTransferFrom(address(this), _msgSender(), tokenId);
 
-        msgTokenAddress[msgId] = tokenAddress;
-        msgTokenId[msgId] = tokenId;
-        msgRecipient[msgId] = msg.sender;
-
-        emit nftWithdraw(msgId, msg.sender, tokenAddress, tokenId);
-
-        return msgId;
+        emit nftWithdraw(_msgSender(), tokenAddress, tokenId);
     }
 
-    function fixFailedMessage(bytes32 _msgId) external {
-        require(msg.sender == address(bridgeContract()));
-        require(bridgeContract().messageSender() == mediatorContractOnOtherSide());
-        require(!messageFixed[_msgId]);
+    function withdraw(uint256 nftId_) external {
+        require(allNFTs[nftId_].owner == msg.sender && allNFTs[nftId_].collectionId == 0, "Not owned");
+        _withdraw(nftId_);
+    }
 
-        address recipient = msgRecipient[_msgId];
-        address tokenAddress = msgTokenAddress[_msgId];
-        uint256 tokenId = msgTokenId[_msgId];
+    function claim(uint256 collectionId_, uint256 index_) external {
+        require(allCollections[collectionId_].soldCount ==
+                allCollections[collectionId_].size, "Not finished");
+        require(slotOwner[collectionId_][index_] == _msgSender(), "Only winner can claim");
 
-        messageFixed[_msgId] = true;
+        uint256 nftId = nftsByCollectionId[collectionId_][index_];
 
-        // Revert
-        uint256 nftId = nftMap[tokenAddress][tokenId];
-        allNFTs[nftId].owner = recipient;
-
-        emit failedMessageFixed(_msgId, recipient, tokenAddress, tokenId);
+        require(allNFTs[nftId].collectionId == collectionId_, "Already claimed");
+        _withdraw(nftId);
     }
 
     function createCollection(
@@ -191,10 +201,14 @@ contract NFTMaster is Ownable, AMBMediator {
         bool willAcceptBLES_,
         address[] calldata collaborators_
     ) external {
+        require(size_ >= collectionMinimumSize, "Size too small");
+
         Collection memory collection;
         collection.owner = msg.sender;
         collection.name = name_;
         collection.size = size_;
+        collection.totalPrice = 0;
+        collection.averagePrice = 0;
         collection.willAcceptBLES = willAcceptBLES_;
         collection.isFeatured = false;
         collection.isPublished = false;
@@ -211,9 +225,12 @@ contract NFTMaster is Ownable, AMBMediator {
     }
 
     function addNFTToCollection(uint256 nftId_, uint256 collectionId_, uint256 price_) external {
-        require(allNFTs[nftId_].owner == _msgSender(), "Only owner can add");
+        require(allNFTs[nftId_].owner == _msgSender(), "Only NFT owner can add");
         require(allCollections[collectionId_].owner == _msgSender() ||
-                isCollaborator[collectionId_][_msgSender()], "Needs owner or collaborator");
+                isCollaborator[collectionId_][_msgSender()], "Needs collection owner or collaborator");
+
+        require(price_ >= nftPriceFloor && price_ <= nftPriceCeil, "Price not in range");
+
         require(allNFTs[nftId_].collectionId == 0, "Already added");
         require(!allCollections[collectionId_].isPublished, "Collection already published");
         require(nftsByCollectionId[collectionId_].length < allCollections[collectionId_].size,
@@ -225,6 +242,22 @@ contract NFTMaster is Ownable, AMBMediator {
 
         // Push to nftsByCollectionId.
         nftsByCollectionId[collectionId_].push(nftId_);
+
+        allCollections[collectionId_].totalPrice = allCollections[collectionId_].totalPrice.add(price_);
+    }
+
+    function editNFTInCollection(uint256 nftId_, uint256 collectionId_, uint256 price_) external {
+        require(allCollections[collectionId_].owner == _msgSender() ||
+                allNFTs[nftId_].owner == _msgSender(), "Needs collection owner or NFT owner");
+
+        require(price_ >= nftPriceFloor && price_ <= nftPriceCeil, "Price not in range");
+
+        require(allNFTs[nftId_].collectionId == collectionId_, "NFT not in collection");
+        require(!allCollections[collectionId_].isPublished, "Collection already published");
+
+        allCollections[collectionId_].totalPrice = allCollections[collectionId_].totalPrice.add(
+            price_).sub(allNFTs[nftId_].price);
+        allNFTs[nftId_].price = price_;  // Change price.
     }
 
     function removeNFTFromCollection(uint256 nftId_, uint256 collectionId_) external {
@@ -245,9 +278,115 @@ contract NFTMaster is Ownable, AMBMediator {
         nftsByCollectionId[collectionId_].pop();
     }
 
-    function publishCollection(uint256 collectionId_) public {
+    function randomnessCount(uint256 size_) public pure returns(uint256){
+        uint256 i;
+        for (i = 0; size_** i <= type(uint256).max / size_; i++) {}
+        return i;
+    }
+
+    function publishCollection(uint256 collectionId_, uint256 amountInMax_, uint256 deadline_) public {
         require(allCollections[collectionId_].owner == _msgSender(), "Only owner can publish");
 
+        uint256 actualSize = nftsByCollectionId[collectionId_].length;
+        require(actualSize >= collectionMinimumSize, "Not enough boxes");
+
+        allCollections[collectionId_].size = actualSize;  // Fit the size.
+        allCollections[collectionId_].averagePrice = allCollections[collectionId_].totalPrice.div(actualSize);
         allCollections[collectionId_].isPublished = true;
+
+        // Now buy LINK. Here is some math for calculating the time of calls needed from ChainLink.
+        uint256 count = randomnessCount(actualSize);
+        uint256 times = (actualSize + count - 1) / count;
+        _buyLink(times, amountInMax_, deadline_);
+
+        allCollections[collectionId_].timesToCall = times;
+    }
+
+    function _buyLink(uint256 times_, uint256 amountInMax_, uint256 deadline_) private {
+        uint256 amountToBuy = fee.mul(times_);
+
+        address[] memory path = new address[](3);
+        path[0] = address(baseToken);
+        path[1] = address(wETH);
+        path[2] = address(linkToken);
+
+        router.swapTokensForExactTokens(
+            amountToBuy,
+            amountInMax_,
+            path,
+            address(this),
+            deadline_);
+    }
+
+    function drawBoxes(uint256 collectionId_, uint256 times_) external {
+        require(allCollections[collectionId_].soldCount.add(times_) <= allCollections[collectionId_].size, "Not enough left");
+
+        uint256 cost = allCollections[collectionId_].averagePrice.mul(times_);
+        IERC20(baseToken).safeTransferFrom(_msgSender(), address(this), cost);
+
+        Slot memory slot;
+        slot.owner = _msgSender();
+        slot.size = times_;
+        slotMap[collectionId_].push(slot);
+
+        allCollections[collectionId_].soldCount = allCollections[collectionId_].soldCount.add(times_);
+
+        for (uint256 i = allCollections[collectionId_].size - allCollections[collectionId_].timesToCall;
+                 i < allCollections[collectionId_].soldCount;
+                 ++i) {
+            _getRandomNumber(collectionId_, i);
+        }
+    }
+
+    function _takeIndex(address who_, uint256 collectionId_, uint256 index_) private {
+        uint256 size = allCollections[collectionId_].size;
+
+        for (uint256 i = index_; i < size; ++i) {
+            if (slotOwner[collectionId_][i] == address(0)) {
+                slotOwner[collectionId_][i] = who_;
+                return;
+            }
+        }
+
+        require(slotOwner[collectionId_][0] == address(0), "0 should be the only left index");
+        slotOwner[collectionId_][0] = who_;
+    }
+
+    function _getRandomNumber(uint256 collectionId_, uint256 userProvidedSeed) private {
+        require(linkToken.balanceOf(address(this)) > fee, "Not enough LINK");
+        bytes32 requestId = requestRandomness(keyHash, fee, userProvidedSeed);
+        requestIdToCollectionId[requestId] = collectionId_;
+    }
+
+    /**
+     * Callback function used by VRF Coordinator
+     */
+    function fulfillRandomness(bytes32 requestId, uint256 randomness) internal override {
+        uint256 collectionId = requestIdToCollectionId[requestId];
+
+        uint256 size = allCollections[collectionId].size;
+        uint256 count = randomnessCount(size);
+        require(count > 0, "Randomness count > 0");
+
+        for (; allCollections[collectionId].slotPointerI < slotMap[collectionId].length;
+                ++allCollections[collectionId].slotPointerI) {
+            for (; allCollections[collectionId].slotPointerJ < 
+                    slotMap[collectionId][allCollections[collectionId].slotPointerI].size;
+                    ++allCollections[collectionId].slotPointerJ) {
+                uint256 result = randomness / size;
+                randomness = randomness % size;
+
+                _takeIndex(slotMap[collectionId][allCollections[collectionId].slotPointerI].owner, collectionId, result);
+
+                count--;
+                if (count == 0) break;
+            }
+
+            if (allCollections[collectionId].slotPointerJ >= slotMap[collectionId][allCollections[collectionId].slotPointerI].size) {
+                allCollections[collectionId].slotPointerJ = 0;
+            }
+
+            if (count == 0) break;
+        }
     }
 }
