@@ -2,7 +2,6 @@
 pragma solidity 0.6.12;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
 
 // This token is owned by Timelock.
 contract BLES is ERC20("Blind Boxes Token", "BLES") {
