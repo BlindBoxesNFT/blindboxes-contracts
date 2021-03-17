@@ -5,10 +5,10 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 // This token is owned by Timelock.
-contract BLES is ERC20("Blind Boxes Token", "BLES"), Ownable {
+contract BLES is ERC20("Blind Boxes Token", "BLES") {
 
     constructor() public {
-        _mint(msg.sender, 1e26);  // 100 million, 18 decimals
+        _mint(_msgSender(), 1e26);  // 100 million, 18 decimals
     }
 
     function burn(uint256 _amount) external {
