@@ -21,10 +21,17 @@ contract NFTMaster is Ownable, VRFConsumerBase {
 
     IERC20 wETH;
     IERC20 baseToken;
+    IERC20 blesToken;
     IERC20 linkToken;
 
-    bytes32 public keyHash;
-    uint256 public fee = 1e17;  // 0.1 LINK
+    bytes32 public linkKeyHash;
+    uint256 public linkCost = 1e17;  // 0.1 LINK
+
+    // Platform fee.
+    uint256 constant FEE_BASE = 10000;
+    uint256 public feeRate = 500;  // 5%
+
+    address public feeTo;
 
     IUniswapV2Router02 public router;
 
@@ -36,6 +43,7 @@ contract NFTMaster is Ownable, VRFConsumerBase {
         uint256 tokenId;
         address owner;
         uint256 price;
+        uint256 paid;
         uint256 collectionId;
         uint256 indexInCollection;
     }
@@ -55,6 +63,7 @@ contract NFTMaster is Ownable, VRFConsumerBase {
         uint256 size;
         uint256 totalPrice;
         uint256 averagePrice;
+        uint256 fee;
         bool willAcceptBLES;
         bool isFeatured;
         bool isPublished;
@@ -108,12 +117,24 @@ contract NFTMaster is Ownable, VRFConsumerBase {
         baseToken = baseToken_;
     }
 
-    function setKeyHash(bytes32 keyHash_) external onlyOwner {
-        keyHash = keyHash_;
+    function setBlesToken(IERC20 blesToken_) external onlyOwner {
+        blesToken = blesToken_;
     }
 
-    function setFee(uint256 fee_) external onlyOwner {
-        fee = fee_;
+    function setLinkKeyHash(bytes32 linkKeyHash_) external onlyOwner {
+        linkKeyHash = linkKeyHash_;
+    }
+
+    function setLinkCost(uint256 linkCost_) external onlyOwner {
+        linkCost = linkCost_;
+    }
+
+    function setFeeRate(uint256 feeRate_) external onlyOwner {
+        feeRate = feeRate_;
+    }
+
+    function setFeeTo(address feeTo_) external onlyOwner {
+        feeTo = feeTo_;
     }
 
     function setUniswapV2Router(IUniswapV2Router02 router_) external {
@@ -142,7 +163,7 @@ contract NFTMaster is Ownable, VRFConsumerBase {
         return ++nextCollectionId;
     }
 
-    function deposit(address tokenAddress_, uint256 tokenId_) external {
+    function depositNFT(address tokenAddress_, uint256 tokenId_) external {
         IERC721(tokenAddress_).safeTransferFrom(_msgSender(), address(this), tokenId_);
 
         NFT memory nft;
@@ -179,12 +200,12 @@ contract NFTMaster is Ownable, VRFConsumerBase {
         emit nftWithdraw(_msgSender(), tokenAddress, tokenId);
     }
 
-    function withdraw(uint256 nftId_) external {
+    function withdrawNFT(uint256 nftId_) external {
         require(allNFTs[nftId_].owner == msg.sender && allNFTs[nftId_].collectionId == 0, "Not owned");
         _withdraw(nftId_);
     }
 
-    function claim(uint256 collectionId_, uint256 index_) external {
+    function claimNFT(uint256 collectionId_, uint256 index_) external {
         require(allCollections[collectionId_].soldCount ==
                 allCollections[collectionId_].size, "Not finished");
         require(slotOwner[collectionId_][index_] == _msgSender(), "Only winner can claim");
@@ -192,7 +213,49 @@ contract NFTMaster is Ownable, VRFConsumerBase {
         uint256 nftId = nftsByCollectionId[collectionId_][index_];
 
         require(allNFTs[nftId].collectionId == collectionId_, "Already claimed");
+
+        if (allNFTs[nftId].paid == 0) {
+            if (allCollections[collectionId_].willAcceptBLES) {
+                allNFTs[nftId].paid = allNFTs[nftId].price;
+                IERC20(blesToken).safeTransfer(allNFTs[nftId].owner, allNFTs[nftId].paid);
+            } else {
+                allNFTs[nftId].paid = allNFTs[nftId].price.mul(FEE_BASE.sub(feeRate)).div(FEE_BASE);
+                IERC20(baseToken).safeTransfer(allNFTs[nftId].owner, allNFTs[nftId].paid);
+            }
+        }
+
         _withdraw(nftId);
+    }
+
+    function claimRevenue(uint256 collectionId_, uint256 index_) external {
+        require(allCollections[collectionId_].soldCount ==
+                allCollections[collectionId_].size, "Not finished");
+
+        uint256 nftId = nftsByCollectionId[collectionId_][index_];
+
+        require(allNFTs[nftId].owner == _msgSender() && allNFTs[nftId].collectionId > 0, "NFT not claimed");
+
+        if (allNFTs[nftId].paid == 0) {
+            if (allCollections[collectionId_].willAcceptBLES) {
+                allNFTs[nftId].paid = allNFTs[nftId].price;
+                IERC20(blesToken).safeTransfer(allNFTs[nftId].owner, allNFTs[nftId].paid);
+            } else {
+                allNFTs[nftId].paid = allNFTs[nftId].price.mul(FEE_BASE.sub(feeRate)).div(FEE_BASE);
+                IERC20(baseToken).safeTransfer(allNFTs[nftId].owner, allNFTs[nftId].paid);
+            }
+        }
+    }
+
+    function claimFee(uint256 collectionId_) external {
+        Collection storage collection = allCollections[collectionId_];
+
+        require(collection.soldCount ==
+                collection.size, "Not finished");
+        require(collection.willAcceptBLES, "No fee if you accept BLES");
+
+        if (feeTo != address(0)) {
+            IERC20(baseToken).safeTransfer(feeTo, collection.fee);
+        }
     }
 
     function createCollection(
@@ -244,6 +307,10 @@ contract NFTMaster is Ownable, VRFConsumerBase {
         nftsByCollectionId[collectionId_].push(nftId_);
 
         allCollections[collectionId_].totalPrice = allCollections[collectionId_].totalPrice.add(price_);
+
+        if (allCollections[collectionId_].willAcceptBLES) {
+            allCollections[collectionId_].fee = allCollections[collectionId_].fee.add(price_.mul(feeRate).div(FEE_BASE));
+        }
     }
 
     function editNFTInCollection(uint256 nftId_, uint256 collectionId_, uint256 price_) external {
@@ -257,6 +324,13 @@ contract NFTMaster is Ownable, VRFConsumerBase {
 
         allCollections[collectionId_].totalPrice = allCollections[collectionId_].totalPrice.add(
             price_).sub(allNFTs[nftId_].price);
+
+        if (allCollections[collectionId_].willAcceptBLES) {
+            allCollections[collectionId_].fee = allCollections[collectionId_].fee.add(
+                price_.mul(feeRate).div(FEE_BASE)).sub(
+                    allNFTs[nftId_].price.mul(feeRate).div(FEE_BASE));
+        }
+
         allNFTs[nftId_].price = price_;  // Change price.
     }
 
@@ -266,6 +340,13 @@ contract NFTMaster is Ownable, VRFConsumerBase {
                 "Only NFT owner or collection owner can remove");
         require(allNFTs[nftId_].collectionId == collectionId_, "NFT not in collection");
         require(!allCollections[collectionId_].isPublished, "Collection already published");
+
+        allCollections[collectionId_].totalPrice = allCollections[collectionId_].totalPrice.sub(allNFTs[nftId_].price);
+
+        if (allCollections[collectionId_].willAcceptBLES) {
+            allCollections[collectionId_].fee = allCollections[collectionId_].fee.sub(
+                    allNFTs[nftId_].price.mul(feeRate).div(FEE_BASE));
+        }
 
         allNFTs[nftId_].collectionId = 0;
 
@@ -291,7 +372,9 @@ contract NFTMaster is Ownable, VRFConsumerBase {
         require(actualSize >= collectionMinimumSize, "Not enough boxes");
 
         allCollections[collectionId_].size = actualSize;  // Fit the size.
-        allCollections[collectionId_].averagePrice = allCollections[collectionId_].totalPrice.div(actualSize);
+
+        // Math.ceil(totalPrice / actualSize);
+        allCollections[collectionId_].averagePrice = allCollections[collectionId_].totalPrice.add(actualSize.sub(1)).div(actualSize);
         allCollections[collectionId_].isPublished = true;
 
         // Now buy LINK. Here is some math for calculating the time of calls needed from ChainLink.
@@ -303,7 +386,7 @@ contract NFTMaster is Ownable, VRFConsumerBase {
     }
 
     function _buyLink(uint256 times_, uint256 amountInMax_, uint256 deadline_) private {
-        uint256 amountToBuy = fee.mul(times_);
+        uint256 amountToBuy = linkCost.mul(times_);
 
         address[] memory path = new address[](3);
         path[0] = address(baseToken);
@@ -322,7 +405,12 @@ contract NFTMaster is Ownable, VRFConsumerBase {
         require(allCollections[collectionId_].soldCount.add(times_) <= allCollections[collectionId_].size, "Not enough left");
 
         uint256 cost = allCollections[collectionId_].averagePrice.mul(times_);
-        IERC20(baseToken).safeTransferFrom(_msgSender(), address(this), cost);
+
+        if (allCollections[collectionId_].willAcceptBLES) {
+            IERC20(blesToken).safeTransferFrom(_msgSender(), address(this), cost);
+        } else {
+            IERC20(baseToken).safeTransferFrom(_msgSender(), address(this), cost);
+        }
 
         Slot memory slot;
         slot.owner = _msgSender();
@@ -353,8 +441,8 @@ contract NFTMaster is Ownable, VRFConsumerBase {
     }
 
     function _getRandomNumber(uint256 collectionId_, uint256 userProvidedSeed) private {
-        require(linkToken.balanceOf(address(this)) > fee, "Not enough LINK");
-        bytes32 requestId = requestRandomness(keyHash, fee, userProvidedSeed);
+        require(linkToken.balanceOf(address(this)) > linkCost, "Not enough LINK");
+        bytes32 requestId = requestRandomness(linkKeyHash, linkCost, userProvidedSeed);
         requestIdToCollectionId[requestId] = collectionId_;
     }
 
