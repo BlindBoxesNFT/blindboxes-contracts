@@ -71,8 +71,6 @@ contract NFTMaster is Ownable, VRFConsumerBase {
 
         // The following are runtime variables
         uint256 timesToCall;
-        uint256 slotPointerI;
-        uint256 slotPointerJ;
         uint256 soldCount;
     }
 
@@ -88,7 +86,12 @@ contract NFTMaster is Ownable, VRFConsumerBase {
     // collectionId => nftId[]
     mapping(uint256 => uint256[]) public nftsByCollectionId;
 
-    mapping(bytes32 => uint256) public requestIdToCollectionId;
+    struct RequestInfo {
+        uint256 collectionId;
+        uint256 index;
+    }
+
+    mapping(bytes32 => RequestInfo) public requestInfoMap;
 
     struct Slot {
         address owner;
@@ -97,12 +100,13 @@ contract NFTMaster is Ownable, VRFConsumerBase {
 
     // collectionId => Slot[]
     mapping(uint256 => Slot[]) public slotMap;
-    // collectionId => index => address
-    mapping(uint256 => mapping(uint256 => address)) public slotOwner;
+
+    // collectionId => randomnessIndex => r
+    mapping(uint256 => mapping(uint256 => uint256)) public nftMapping;
 
     uint256 public nftPriceFloor = 1e18;  // 1 USDC
     uint256 public nftPriceCeil = 1e24;  // 1M USDC
-    uint256 public collectionMinimumSize = 10;  // 10 blind boxes
+    uint256 public minimumCollectionSize = 10;  // 10 blind boxes
 
     constructor(
         IERC20 wETH_,
@@ -151,8 +155,8 @@ contract NFTMaster is Ownable, VRFConsumerBase {
         nftPriceCeil = value_;
     }
 
-    function setCollectionMinimumSize(uint256 size_) external onlyOwner {
-        collectionMinimumSize = size_;
+    function setMinimumCollectionSize(uint256 size_) external onlyOwner {
+        minimumCollectionSize = size_;
     }
 
     function _generateNextNFTId() private returns(uint256) {
@@ -208,7 +212,10 @@ contract NFTMaster is Ownable, VRFConsumerBase {
     function claimNFT(uint256 collectionId_, uint256 index_) external {
         require(allCollections[collectionId_].soldCount ==
                 allCollections[collectionId_].size, "Not finished");
-        require(slotOwner[collectionId_][index_] == _msgSender(), "Only winner can claim");
+
+        address winner = getWinner(collectionId_, index_);
+
+        require(winner == _msgSender(), "Only winner can claim");
 
         uint256 nftId = nftsByCollectionId[collectionId_][index_];
 
@@ -264,7 +271,7 @@ contract NFTMaster is Ownable, VRFConsumerBase {
         bool willAcceptBLES_,
         address[] calldata collaborators_
     ) external {
-        require(size_ >= collectionMinimumSize, "Size too small");
+        require(size_ >= minimumCollectionSize, "Size too small");
 
         Collection memory collection;
         collection.owner = msg.sender;
@@ -369,7 +376,7 @@ contract NFTMaster is Ownable, VRFConsumerBase {
         require(allCollections[collectionId_].owner == _msgSender(), "Only owner can publish");
 
         uint256 actualSize = nftsByCollectionId[collectionId_].length;
-        require(actualSize >= collectionMinimumSize, "Not enough boxes");
+        require(actualSize >= minimumCollectionSize, "Not enough boxes");
 
         allCollections[collectionId_].size = actualSize;  // Fit the size.
 
@@ -419,62 +426,82 @@ contract NFTMaster is Ownable, VRFConsumerBase {
 
         allCollections[collectionId_].soldCount = allCollections[collectionId_].soldCount.add(times_);
 
-        for (uint256 i = allCollections[collectionId_].size - allCollections[collectionId_].timesToCall;
+        uint256 startFromIndex = allCollections[collectionId_].size - allCollections[collectionId_].timesToCall;
+        for (uint256 i = startFromIndex;
                  i < allCollections[collectionId_].soldCount;
                  ++i) {
-            _getRandomNumber(collectionId_, i);
+            _getRandomNumber(collectionId_, i.sub(startFromIndex));
         }
     }
 
-    function _takeIndex(address who_, uint256 collectionId_, uint256 index_) private {
+    function getWinner(uint256 collectionId_, uint256 nftIndex_) public view returns(address) {
         uint256 size = allCollections[collectionId_].size;
+        uint256 count = randomnessCount(size);
+        uint256 randomnessIndex = nftIndex_ / count;
+        uint256 r = nftMapping[collectionId_][randomnessIndex];
 
-        for (uint256 i = index_; i < size; ++i) {
-            if (slotOwner[collectionId_][i] == address(0)) {
-                slotOwner[collectionId_][i] = who_;
-                return;
+        uint256 i;
+
+        for (i = 0; i < nftIndex_ % count; ++i) {
+          r /= size;
+        }
+
+        r = r % size;
+
+        for (i = 0; i < slotMap[collectionId_].length; ++i) {
+            if (r >= slotMap[collectionId_][i].size) {
+                r -= slotMap[collectionId_][i].size;
+            } else {
+                return slotMap[collectionId_][i].owner;
             }
         }
 
-        require(slotOwner[collectionId_][0] == address(0), "0 should be the only left index");
-        slotOwner[collectionId_][0] = who_;
+        require(false, "r overflow");
     }
 
-    function _getRandomNumber(uint256 collectionId_, uint256 userProvidedSeed) private {
+    function _getRandomNumber(uint256 collectionId_, uint256 index_) private {
         require(linkToken.balanceOf(address(this)) > linkCost, "Not enough LINK");
-        bytes32 requestId = requestRandomness(linkKeyHash, linkCost, userProvidedSeed);
-        requestIdToCollectionId[requestId] = collectionId_;
+        bytes32 requestId = requestRandomness(linkKeyHash, linkCost, index_);
+        requestInfoMap[requestId].collectionId = collectionId_;
+        requestInfoMap[requestId].index = index_;
     }
 
     /**
      * Callback function used by VRF Coordinator
      */
     function fulfillRandomness(bytes32 requestId, uint256 randomness) internal override {
-        uint256 collectionId = requestIdToCollectionId[requestId];
+        uint256 collectionId = requestInfoMap[requestId].collectionId;
+        uint256 randomnessIndex = requestInfoMap[requestId].index;
 
         uint256 size = allCollections[collectionId].size;
-        uint256 count = randomnessCount(size);
-        require(count > 0, "Randomness count > 0");
+        bool[] memory filled = new bool[](size);
 
-        for (; allCollections[collectionId].slotPointerI < slotMap[collectionId].length;
-                ++allCollections[collectionId].slotPointerI) {
-            for (; allCollections[collectionId].slotPointerJ < 
-                    slotMap[collectionId][allCollections[collectionId].slotPointerI].size;
-                    ++allCollections[collectionId].slotPointerJ) {
-                uint256 result = randomness / size;
-                randomness = randomness % size;
+        uint256 r;
+        uint256 i;
 
-                _takeIndex(slotMap[collectionId][allCollections[collectionId].slotPointerI].owner, collectionId, result);
-
-                count--;
-                if (count == 0) break;
+        for (i = 0; i < randomnessIndex; ++i) {
+            r = nftMapping[collectionId][i];
+            while (r >= size) {
+                filled[r % size] = true;
+                r /= size;
             }
 
-            if (allCollections[collectionId].slotPointerJ >= slotMap[collectionId][allCollections[collectionId].slotPointerI].size) {
-                allCollections[collectionId].slotPointerJ = 0;
-            }
-
-            if (count == 0) break;
+            filled[r] = true;
         }
+
+        r = 0;
+        while (randomness >= size) {
+            // Skips filled mappings.
+            for (i = 0; i < size; ++i) {
+                if (!filled[i]) {
+                    break;
+                }
+            }
+
+            filled[i] = true;
+            r = r * size + i;
+        }
+
+        nftMapping[collectionId][randomnessIndex] = r;
     }
 }
