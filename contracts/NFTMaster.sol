@@ -18,6 +18,7 @@ contract NFTMaster is Ownable, VRFConsumerBase {
 
     event nftDeposit(address _who, address _tokenAddress, uint256 _tokenId);
     event nftWithdraw(address _who, address _tokenAddress, uint256 _tokenId);
+    event nftClaim(address _who, address _tokenAddress, uint256 _tokenId);
 
     IERC20 wETH;
     IERC20 baseToken;
@@ -192,7 +193,7 @@ contract NFTMaster is Ownable, VRFConsumerBase {
         emit nftDeposit(_msgSender(), tokenAddress_, tokenId_);
     }
 
-    function _withdraw(uint256 nftId_) private {
+    function _withdrawNFT(uint256 nftId_, bool isClaim_) private {
         allNFTs[nftId_].owner = address(0);
         allNFTs[nftId_].collectionId = 0;
 
@@ -201,12 +202,16 @@ contract NFTMaster is Ownable, VRFConsumerBase {
 
         IERC721(tokenAddress).safeTransferFrom(address(this), _msgSender(), tokenId);
 
-        emit nftWithdraw(_msgSender(), tokenAddress, tokenId);
+        if (isClaim_) {
+            emit nftClaim(_msgSender(), tokenAddress, tokenId);
+        } else {
+            emit nftWithdraw(_msgSender(), tokenAddress, tokenId);
+        }
     }
 
     function withdrawNFT(uint256 nftId_) external {
         require(allNFTs[nftId_].owner == msg.sender && allNFTs[nftId_].collectionId == 0, "Not owned");
-        _withdraw(nftId_);
+        _withdrawNFT(nftId_, false);
     }
 
     function claimNFT(uint256 collectionId_, uint256 index_) external {
@@ -231,7 +236,7 @@ contract NFTMaster is Ownable, VRFConsumerBase {
             }
         }
 
-        _withdraw(nftId);
+        _withdrawNFT(nftId, true);
     }
 
     function claimRevenue(uint256 collectionId_, uint256 index_) external {
@@ -386,13 +391,13 @@ contract NFTMaster is Ownable, VRFConsumerBase {
 
         // Now buy LINK. Here is some math for calculating the time of calls needed from ChainLink.
         uint256 count = randomnessCount(actualSize);
-        uint256 times = (actualSize + count - 1) / count;
-        _buyLink(times, amountInMax_, deadline_);
+        uint256 times = (actualSize + count - 1) / count;  // Math.ceil
+        buyLink(times, amountInMax_, deadline_);
 
         allCollections[collectionId_].timesToCall = times;
     }
 
-    function _buyLink(uint256 times_, uint256 amountInMax_, uint256 deadline_) private {
+    function buyLink(uint256 times_, uint256 amountInMax_, uint256 deadline_) internal virtual {
         uint256 amountToBuy = linkCost.mul(times_);
 
         address[] memory path = new address[](3);
@@ -430,11 +435,17 @@ contract NFTMaster is Ownable, VRFConsumerBase {
         for (uint256 i = startFromIndex;
                  i < allCollections[collectionId_].soldCount;
                  ++i) {
-            _getRandomNumber(collectionId_, i.sub(startFromIndex));
+            getRandomNumber(collectionId_, i.sub(startFromIndex));
         }
     }
 
     function getWinner(uint256 collectionId_, uint256 nftIndex_) public view returns(address) {
+        if (allCollections[collectionId_].soldCount <
+                allCollections[collectionId_].size) {
+            // Not sold all yet.
+            return address(0);
+        }
+
         uint256 size = allCollections[collectionId_].size;
         uint256 count = randomnessCount(size);
         uint256 randomnessIndex = nftIndex_ / count;
@@ -459,7 +470,7 @@ contract NFTMaster is Ownable, VRFConsumerBase {
         require(false, "r overflow");
     }
 
-    function _getRandomNumber(uint256 collectionId_, uint256 index_) private {
+    function getRandomNumber(uint256 collectionId_, uint256 index_) internal virtual {
         require(linkToken.balanceOf(address(this)) > linkCost, "Not enough LINK");
         bytes32 requestId = requestRandomness(linkKeyHash, linkCost, index_);
         requestInfoMap[requestId].collectionId = collectionId_;
