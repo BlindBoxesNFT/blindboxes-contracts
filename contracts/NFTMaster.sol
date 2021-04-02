@@ -7,26 +7,26 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 
-import "@chainlink/contracts/src/v0.6/VRFConsumerBase.sol";
-
+import "./interfaces/ILinkAccessor.sol";
 import "./interfaces/IUniswapV2Router02.sol";
 
 // This contract is owned by Timelock.
-contract NFTMaster is Ownable, VRFConsumerBase {
+contract NFTMaster is Ownable {
 
     using SafeERC20 for IERC20;
+    using SafeMath for uint256;
 
     event nftDeposit(address _who, address _tokenAddress, uint256 _tokenId);
     event nftWithdraw(address _who, address _tokenAddress, uint256 _tokenId);
     event nftClaim(address _who, address _tokenAddress, uint256 _tokenId);
 
-    IERC20 wETH;
-    IERC20 baseToken;
-    IERC20 blesToken;
-    IERC20 linkToken;
+    IERC20 public wETH;
+    IERC20 public baseToken;
+    IERC20 public blesToken;
+    IERC20 public linkToken;
 
-    bytes32 public linkKeyHash;
     uint256 public linkCost = 1e17;  // 0.1 LINK
+    ILinkAccessor public linkAccessor;
 
     // Platform fee.
     uint256 constant FEE_BASE = 10000;
@@ -109,13 +109,14 @@ contract NFTMaster is Ownable, VRFConsumerBase {
     uint256 public nftPriceCeil = 1e24;  // 1M USDC
     uint256 public minimumCollectionSize = 10;  // 10 blind boxes
 
-    constructor(
-        IERC20 wETH_,
-        address vrfCoordinator_,
-        IERC20 link_
-    ) VRFConsumerBase(vrfCoordinator_, address(link_)) public {
+    constructor() public { }
+
+    function setWETH(IERC20 wETH_) external onlyOwner {
         wETH = wETH_;
-        linkToken = link_;
+    }
+
+    function setLinkToken(IERC20 linkToken_) external onlyOwner {
+        linkToken = linkToken_;
     }
 
     function setBaseToken(IERC20 baseToken_) external onlyOwner {
@@ -126,8 +127,8 @@ contract NFTMaster is Ownable, VRFConsumerBase {
         blesToken = blesToken_;
     }
 
-    function setLinkKeyHash(bytes32 linkKeyHash_) external onlyOwner {
-        linkKeyHash = linkKeyHash_;
+    function setLinkAccessor(ILinkAccessor linkAccessor_) external onlyOwner {
+        linkAccessor = linkAccessor_;
     }
 
     function setLinkCost(uint256 linkCost_) external onlyOwner {
@@ -409,7 +410,7 @@ contract NFTMaster is Ownable, VRFConsumerBase {
             amountToBuy,
             amountInMax_,
             path,
-            address(this),
+            address(linkAccessor),
             deadline_);
     }
 
@@ -470,9 +471,8 @@ contract NFTMaster is Ownable, VRFConsumerBase {
         require(false, "r overflow");
     }
 
-    function getRandomNumber(uint256 collectionId_, uint256 index_) internal virtual {
-        require(linkToken.balanceOf(address(this)) > linkCost, "Not enough LINK");
-        bytes32 requestId = requestRandomness(linkKeyHash, linkCost, index_);
+    function getRandomNumber(uint256 collectionId_, uint256 index_) private {
+        bytes32 requestId = linkAccessor.requestRandomness(index_);
         requestInfoMap[requestId].collectionId = collectionId_;
         requestInfoMap[requestId].index = index_;
     }
@@ -480,7 +480,9 @@ contract NFTMaster is Ownable, VRFConsumerBase {
     /**
      * Callback function used by VRF Coordinator
      */
-    function fulfillRandomness(bytes32 requestId, uint256 randomness) internal override {
+    function fulfillRandomness(bytes32 requestId, uint256 randomness) public {
+        require(_msgSender() == address(linkAccessor), "Only linkAccessor can call");
+
         uint256 collectionId = requestInfoMap[requestId].collectionId;
         uint256 randomnessIndex = requestInfoMap[requestId].index;
 
