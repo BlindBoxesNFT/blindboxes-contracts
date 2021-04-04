@@ -6,12 +6,13 @@ import "@openzeppelin/contracts/math/SafeMath.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 
 import "./interfaces/ILinkAccessor.sol";
 import "./interfaces/IUniswapV2Router02.sol";
 
 // This contract is owned by Timelock.
-contract NFTMaster is Ownable {
+contract NFTMaster is Ownable, IERC721Receiver {
 
     using SafeERC20 for IERC20;
     using SafeMath for uint256;
@@ -64,15 +65,14 @@ contract NFTMaster is Ownable {
         uint256 size;
         uint256 totalPrice;
         uint256 averagePrice;
-        uint256 fee;
         bool willAcceptBLES;
-        bool isFeatured;
         bool isPublished;
         address[] collaborators;
 
         // The following are runtime variables
         uint256 timesToCall;
         uint256 soldCount;
+        uint256 fee;
     }
 
     // collectionId => Collection
@@ -107,9 +107,13 @@ contract NFTMaster is Ownable {
 
     uint256 public nftPriceFloor = 1e18;  // 1 USDC
     uint256 public nftPriceCeil = 1e24;  // 1M USDC
-    uint256 public minimumCollectionSize = 10;  // 10 blind boxes
+    uint256 public minimumCollectionSize = 3;  // 3 blind boxes
 
     constructor() public { }
+
+    function onERC721Received(address, address, uint256, bytes memory) public virtual override returns (bytes4) {
+        return this.onERC721Received.selector;
+    }
 
     function setWETH(IERC20 wETH_) external onlyOwner {
         wETH = wETH_;
@@ -286,7 +290,6 @@ contract NFTMaster is Ownable {
         collection.totalPrice = 0;
         collection.averagePrice = 0;
         collection.willAcceptBLES = willAcceptBLES_;
-        collection.isFeatured = false;
         collection.isPublished = false;
         collection.collaborators = collaborators_;
 

@@ -4,7 +4,7 @@ pragma solidity 0.6.12;
 import "../interfaces/INFTMaster.sol";
 import "../interfaces/ILinkAccessor.sol";
 
-contract LinkAccessor is ILinkAccessor {
+contract MockLinkAccessor is ILinkAccessor {
 
     INFTMaster public nftMaster;
     uint256 public randomness;
