@@ -268,11 +268,14 @@ contract NFTMaster is Ownable, IERC721Receiver {
 
         require(collection.soldCount ==
                 collection.size, "Not finished");
-        require(collection.willAcceptBLES, "No fee if you accept BLES");
+        require(!collection.willAcceptBLES, "No fee if you accept BLES");
 
         if (feeTo != address(0)) {
             IERC20(baseToken).safeTransfer(feeTo, collection.fee);
         }
+
+        // Mark it claimed.
+        collection.fee = 0;
     }
 
     function createCollection(
@@ -324,7 +327,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
 
         allCollections[collectionId_].totalPrice = allCollections[collectionId_].totalPrice.add(price_);
 
-        if (allCollections[collectionId_].willAcceptBLES) {
+        if (!allCollections[collectionId_].willAcceptBLES) {
             allCollections[collectionId_].fee = allCollections[collectionId_].fee.add(price_.mul(feeRate).div(FEE_BASE));
         }
     }
@@ -494,28 +497,41 @@ contract NFTMaster is Ownable, IERC721Receiver {
 
         uint256 r;
         uint256 i;
+        uint256 count;
 
         for (i = 0; i < randomnessIndex; ++i) {
             r = nftMapping[collectionId][i];
-            while (r >= size) {
-                filled[r % size] = true;
-                r /= size;
+            while (r > 0) {
+                filled[r.mod(size)] = true;
+                r = r.div(size);
+                count = count.add(1);
             }
-
-            filled[r] = true;
         }
 
         r = 0;
-        while (randomness >= size) {
+
+        uint256 t;
+
+        while (randomness > 0 && count < size) {
+            t = randomness.mod(size);
+            randomness = randomness.div(size);
+
+            t = t.mod(size.sub(count)).add(1);
+
             // Skips filled mappings.
             for (i = 0; i < size; ++i) {
                 if (!filled[i]) {
-                    break;
+                    t = t.sub(1);
+                }
+
+                if (t == 0) {
+                  break;
                 }
             }
 
             filled[i] = true;
-            r = r * size + i;
+            r = r.mul(size).add(i);
+            count = count.add(1);
         }
 
         nftMapping[collectionId][randomnessIndex] = r;

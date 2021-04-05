@@ -19,10 +19,12 @@ function appendZeroes(value, count) {
   return result;
 }
 
-contract('NFTMaster', ([dev, curator, artist, buyer0, buyer1]) => {
+contract('NFTMaster', ([dev, curator, artist, buyer0, buyer1, feeTo, randomGuy]) => {
   beforeEach(async () => {
-    // Mock USDC, 100 million
+    // Mock USDC, 100 million, then transfer to buyer0, and buyer1 each 10 million
     this.baseToken = await MockERC20.new("Mock USDC", "USDC", appendZeroes(1, 26), { from: dev });
+    await this.baseToken.transfer(buyer0, appendZeroes(1, 25), { from: dev });
+    await this.baseToken.transfer(buyer1, appendZeroes(1, 25), { from: dev });
 
     // Mock BLES, 100 million
     this.blesToken = await MockERC20.new("Mock BLES", "BLES", appendZeroes(1, 26), { from: dev });
@@ -45,7 +47,7 @@ contract('NFTMaster', ([dev, curator, artist, buyer0, buyer1]) => {
     await this.nftMaster.setBaseToken(this.baseToken.address, { from: dev });
     await this.nftMaster.setBlesToken(this.blesToken.address, { from: dev });
     await this.nftMaster.setLinkAccessor(this.linkAccessor.address, { from: dev });
-    await this.nftMaster.setFeeTo(dev, { from: dev });
+    await this.nftMaster.setFeeTo(feeTo, { from: dev });
   });
 
   it('create, add, and buy with USDC', async () => {
@@ -69,6 +71,11 @@ contract('NFTMaster', ([dev, curator, artist, buyer0, buyer1]) => {
     await this.nftMaster.depositNFT(this.mockDog.address, 0, {from: curator});
     const nftId2 = await this.nftMaster.nextNFTId();
     assert.equal(nftId2.valueOf(), 3);
+
+    await this.mockDog.approve(this.nftMaster.address, 1, {from: artist});
+    await this.nftMaster.depositNFT(this.mockDog.address, 1, {from: artist});
+    const nftId3 = await this.nftMaster.nextNFTId();
+    assert.equal(nftId3.valueOf(), 4);
 
     // Add NFTs to collection.
 
@@ -94,6 +101,53 @@ contract('NFTMaster', ([dev, curator, artist, buyer0, buyer1]) => {
     assert.equal(collection[5].valueOf(), 0);  // willAcceptBLES
     assert.equal(collection[6].valueOf(), 1);  // isPublished
 
-    // TODO: buy and withdraw
+    // Withdraw nftId3 because we didn't use it.
+    await this.nftMaster.withdrawNFT(nftId3, {from: artist});
+    assert.equal(await this.mockDog.ownerOf(1), artist);
+
+    // Buy and withdraw
+    await this.linkAccessor.setRandomness(11, {from: dev});
+
+    // buyer0 buys 1.
+    await this.baseToken.approve(this.nftMaster.address, appendZeroes(2e20), {from: buyer0});
+    await this.nftMaster.drawBoxes(1, 1, {from: buyer0});
+    // buyer1 buys 2.
+    await this.baseToken.approve(this.nftMaster.address, appendZeroes(4e20), {from: buyer1});
+    await this.nftMaster.drawBoxes(1, 2, {from: buyer1});
+
+    // Trigger randomness
+    await this.linkAccessor.triggerRandomness({from: dev});
+
+    const rrr = await this.nftMaster.nftMapping(1, 0, {from: randomGuy});
+
+    // Check for result.
+    const winner0 = await this.nftMaster.getWinner(1, 0, {from: randomGuy});
+    const winner1 = await this.nftMaster.getWinner(1, 1, {from: randomGuy});
+    const winner2 = await this.nftMaster.getWinner(1, 2, {from: randomGuy});
+
+    const winnerData = [[winner0, nftId0], [winner1, nftId1], [winner2, nftId2]];
+
+    const buyer0NFTIdArray = winnerData.filter(entry => entry[0] == buyer0).map(entry => entry[1]);
+    const buyer1NFTIdArray = winnerData.filter(entry => entry[0] == buyer1).map(entry => entry[1]);
+
+    assert.equal(buyer0NFTIdArray.length, 1);
+    assert.equal(buyer1NFTIdArray.length, 2);
+
+    // Withdraw.
+    // Here nft index happen to be nftId - 1.
+    await this.nftMaster.claimNFT(1, buyer0NFTIdArray[0] - 1, {from: buyer0});
+    await this.nftMaster.claimNFT(1, buyer1NFTIdArray[0] - 1, {from: buyer1});
+    await this.nftMaster.claimNFT(1, buyer1NFTIdArray[1] - 1, {from: buyer1});
+
+    // Curator and artist all get money, after 5% fee deducted.
+    const curatorBalance = await this.baseToken.balanceOf(curator, {from: curator});
+    assert.equal(curatorBalance.valueOf(), 38e19);
+    const artistBalance = await this.baseToken.balanceOf(artist, {from: artist});
+    assert.equal(artistBalance.valueOf(), 19e19);
+
+    // feeTo got fee.
+    await this.nftMaster.claimFee(1, {from: randomGuy});
+    const feeToBalance = await this.baseToken.balanceOf(feeTo, {from: feeTo});
+    assert.equal(feeToBalance.valueOf(), 3e19);
   });
 });

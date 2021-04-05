@@ -8,6 +8,7 @@ contract MockLinkAccessor is ILinkAccessor {
 
     INFTMaster public nftMaster;
     uint256 public randomness;
+    bytes32 public requestId;
 
     constructor(
         INFTMaster nftMaster_
@@ -19,9 +20,12 @@ contract MockLinkAccessor is ILinkAccessor {
         randomness = randomness_;
     }
 
+    function triggerRandomness() external {
+        nftMaster.fulfillRandomness(requestId, randomness);
+    }
+
     function requestRandomness(uint256 userProvidedSeed_) public override returns(bytes32) {
         bytes32 requestId = blockhash(block.number);
-        nftMaster.fulfillRandomness(requestId, randomness);
         return requestId;
     }
 }
