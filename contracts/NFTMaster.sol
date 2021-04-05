@@ -66,7 +66,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
         uint256 totalPrice;
         uint256 averagePrice;
         bool willAcceptBLES;
-        bool isPublished;
+        uint256 publishedAt;  // time that published.
         address[] collaborators;
 
         // The following are runtime variables
@@ -108,6 +108,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
     uint256 public nftPriceFloor = 1e18;  // 1 USDC
     uint256 public nftPriceCeil = 1e24;  // 1M USDC
     uint256 public minimumCollectionSize = 3;  // 3 blind boxes
+    uint256 public maximumDuration = 14 days;  // Refund if not sold out in 14 days.
 
     constructor() public { }
 
@@ -163,6 +164,10 @@ contract NFTMaster is Ownable, IERC721Receiver {
 
     function setMinimumCollectionSize(uint256 size_) external onlyOwner {
         minimumCollectionSize = size_;
+    }
+
+    function setMaximumDuration(uint256 maximumDuration_) external onlyOwner {
+        maximumDuration = maximumDuration_;
     }
 
     function _generateNextNFTId() private returns(uint256) {
@@ -293,7 +298,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
         collection.totalPrice = 0;
         collection.averagePrice = 0;
         collection.willAcceptBLES = willAcceptBLES_;
-        collection.isPublished = false;
+        collection.publishedAt = 0;
         collection.collaborators = collaborators_;
 
         uint256 collectionId = _generateNextCollectionId();
@@ -306,6 +311,10 @@ contract NFTMaster is Ownable, IERC721Receiver {
         }
     }
 
+    function isPublished(uint256 collectionId_) public view returns(bool) {
+        return allCollections[collectionId_].publishedAt > 0;
+    }
+
     function addNFTToCollection(uint256 nftId_, uint256 collectionId_, uint256 price_) external {
         require(allNFTs[nftId_].owner == _msgSender(), "Only NFT owner can add");
         require(allCollections[collectionId_].owner == _msgSender() ||
@@ -314,7 +323,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
         require(price_ >= nftPriceFloor && price_ <= nftPriceCeil, "Price not in range");
 
         require(allNFTs[nftId_].collectionId == 0, "Already added");
-        require(!allCollections[collectionId_].isPublished, "Collection already published");
+        require(!isPublished(collectionId_), "Collection already published");
         require(nftsByCollectionId[collectionId_].length < allCollections[collectionId_].size,
                 "collection full");
 
@@ -339,7 +348,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
         require(price_ >= nftPriceFloor && price_ <= nftPriceCeil, "Price not in range");
 
         require(allNFTs[nftId_].collectionId == collectionId_, "NFT not in collection");
-        require(!allCollections[collectionId_].isPublished, "Collection already published");
+        require(!isPublished(collectionId_), "Collection already published");
 
         allCollections[collectionId_].totalPrice = allCollections[collectionId_].totalPrice.add(
             price_).sub(allNFTs[nftId_].price);
@@ -358,7 +367,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
                 allCollections[collectionId_].owner == _msgSender(),
                 "Only NFT owner or collection owner can remove");
         require(allNFTs[nftId_].collectionId == collectionId_, "NFT not in collection");
-        require(!allCollections[collectionId_].isPublished, "Collection already published");
+        require(!isPublished(collectionId_), "Collection already published");
 
         allCollections[collectionId_].totalPrice = allCollections[collectionId_].totalPrice.sub(allNFTs[nftId_].price);
 
@@ -394,7 +403,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
 
         // Math.ceil(totalPrice / actualSize);
         allCollections[collectionId_].averagePrice = allCollections[collectionId_].totalPrice.add(actualSize.sub(1)).div(actualSize);
-        allCollections[collectionId_].isPublished = true;
+        allCollections[collectionId_].publishedAt = now;
 
         // Now buy LINK. Here is some math for calculating the time of calls needed from ChainLink.
         uint256 count = randomnessCount(actualSize);
@@ -455,7 +464,17 @@ contract NFTMaster is Ownable, IERC721Receiver {
 
         uint256 size = allCollections[collectionId_].size;
         uint256 count = randomnessCount(size);
-        uint256 randomnessIndex = nftIndex_ / count;
+
+        uint256 lastRandomnessIndex = size.sub(1).div(count);
+        uint256 lastR = nftMapping[collectionId_][lastRandomnessIndex];
+
+        // Use lastR as an offset for rotating the sequence, to make sure that
+        // we need to wait for all boxes being sold.
+        nftIndex_ = nftIndex_.add(lastR).mod(size);
+
+        uint256 randomnessIndex = nftIndex_.div(count);
+        randomnessIndex = randomnessIndex.add(lastR).mod(lastRandomnessIndex + 1);
+
         uint256 r = nftMapping[collectionId_][randomnessIndex];
 
         uint256 i;

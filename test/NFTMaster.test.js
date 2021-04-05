@@ -99,7 +99,7 @@ contract('NFTMaster', ([dev, curator, artist, buyer0, buyer1, feeTo, randomGuy])
     assert.equal(collection[3].valueOf(), 6e20);  // totalPrice
     assert.equal(collection[4].valueOf(), 2e20);  // averagePrice
     assert.equal(collection[5].valueOf(), 0);  // willAcceptBLES
-    assert.equal(collection[6].valueOf(), 1);  // isPublished
+    assert.notEqual(collection[6].valueOf(), 0);  // isPublished
 
     // Withdraw nftId3 because we didn't use it.
     await this.nftMaster.withdrawNFT(nftId3, {from: artist});
