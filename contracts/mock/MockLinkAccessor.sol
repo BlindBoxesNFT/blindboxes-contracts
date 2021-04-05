@@ -25,7 +25,7 @@ contract MockLinkAccessor is ILinkAccessor {
     }
 
     function requestRandomness(uint256 userProvidedSeed_) public override returns(bytes32) {
-        bytes32 requestId = blockhash(block.number);
+        requestId = blockhash(block.number);
         return requestId;
     }
 }

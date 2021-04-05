@@ -17,9 +17,12 @@ contract NFTMaster is Ownable, IERC721Receiver {
     using SafeERC20 for IERC20;
     using SafeMath for uint256;
 
-    event nftDeposit(address _who, address _tokenAddress, uint256 _tokenId);
-    event nftWithdraw(address _who, address _tokenAddress, uint256 _tokenId);
-    event nftClaim(address _who, address _tokenAddress, uint256 _tokenId);
+    event CreateCollection(address _who, uint256 _collectionId);
+    event PublishCollection(address _who, uint256 _collectionId);
+    event UnpublishCollection(address _who, uint256 _collectionId);
+    event NFTDeposit(address _who, address _tokenAddress, uint256 _tokenId);
+    event NFTWithdraw(address _who, address _tokenAddress, uint256 _tokenId);
+    event NFTClaim(address _who, address _tokenAddress, uint256 _tokenId);
 
     IERC20 public wETH;
     IERC20 public baseToken;
@@ -34,6 +37,9 @@ contract NFTMaster is Ownable, IERC721Receiver {
     uint256 public feeRate = 500;  // 5%
 
     address public feeTo;
+
+    // Collection creating fee.
+    uint256 creatingFee = 0;  // By default, 0
 
     IUniswapV2Router02 public router;
 
@@ -148,6 +154,10 @@ contract NFTMaster is Ownable, IERC721Receiver {
         feeTo = feeTo_;
     }
 
+    function setCreatingFee(uint256 creatingFee_) external onlyOwner {
+        creatingFee = creatingFee_;
+    }
+
     function setUniswapV2Router(IUniswapV2Router02 router_) external {
         router = router_;
     }
@@ -200,7 +210,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
         allNFTs[nftId] = nft;
         nftsByOwner[_msgSender()].push(nftId);
 
-        emit nftDeposit(_msgSender(), tokenAddress_, tokenId_);
+        emit NFTDeposit(_msgSender(), tokenAddress_, tokenId_);
     }
 
     function _withdrawNFT(uint256 nftId_, bool isClaim_) private {
@@ -213,9 +223,9 @@ contract NFTMaster is Ownable, IERC721Receiver {
         IERC721(tokenAddress).safeTransferFrom(address(this), _msgSender(), tokenId);
 
         if (isClaim_) {
-            emit nftClaim(_msgSender(), tokenAddress, tokenId);
+            emit NFTClaim(_msgSender(), tokenAddress, tokenId);
         } else {
-            emit nftWithdraw(_msgSender(), tokenAddress, tokenId);
+            emit NFTWithdraw(_msgSender(), tokenAddress, tokenId);
         }
     }
 
@@ -291,6 +301,11 @@ contract NFTMaster is Ownable, IERC721Receiver {
     ) external {
         require(size_ >= minimumCollectionSize, "Size too small");
 
+        if (creatingFee > 0) {
+            // Charges BLES for creating the collection.
+            IERC20(blesToken).safeTransfer(feeTo, creatingFee);
+        }
+
         Collection memory collection;
         collection.owner = msg.sender;
         collection.name = name_;
@@ -309,6 +324,8 @@ contract NFTMaster is Ownable, IERC721Receiver {
         for (uint256 i = 0; i < collaborators_.length; ++i) {
             isCollaborator[collectionId][collaborators_[i]] = true;
         }
+
+        emit CreateCollection(msg.sender, collectionId);
     }
 
     function isPublished(uint256 collectionId_) public view returns(bool) {
@@ -393,7 +410,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
         return i;
     }
 
-    function publishCollection(uint256 collectionId_, uint256 amountInMax_, uint256 deadline_) public {
+    function publishCollection(uint256 collectionId_, uint256 amountInMax_, uint256 deadline_) external {
         require(allCollections[collectionId_].owner == _msgSender(), "Only owner can publish");
 
         uint256 actualSize = nftsByCollectionId[collectionId_].length;
@@ -411,6 +428,37 @@ contract NFTMaster is Ownable, IERC721Receiver {
         buyLink(times, amountInMax_, deadline_);
 
         allCollections[collectionId_].timesToCall = times;
+
+        emit PublishCollection(msg.sender, collectionId_);
+    }
+
+    function unpublishCollection(uint256 collectionId_) external {
+        // Anyone can call.
+
+        Collection storage collection = allCollections[collectionId_];
+
+        // Only if the boxes not sold out in maximumDuration, can we unpublish.
+        require(now > collection.publishedAt + maximumDuration, "Not expired yet");
+        require(collection.soldCount < collection.size, "Sold out");
+
+        collection.publishedAt = 0;
+        collection.soldCount = 0;
+        collection.fee = 0;
+
+        // Now refund to the buyers.
+        uint256 length = slotMap[collectionId_].length;
+        for (uint256 i = 0; i < length; ++i) {
+            Slot memory slot = slotMap[collectionId_][length.sub(i + 1)];
+            slotMap[collectionId_].pop();
+
+            if (collection.willAcceptBLES) {
+                IERC20(blesToken).transfer(slot.owner, collection.averagePrice.mul(slot.size));
+            } else {
+                IERC20(baseToken).transfer(slot.owner, collection.averagePrice.mul(slot.size));
+            }
+        }
+
+        emit UnpublishCollection(msg.sender, collectionId_);
     }
 
     function buyLink(uint256 times_, uint256 amountInMax_, uint256 deadline_) internal virtual {
@@ -479,12 +527,13 @@ contract NFTMaster is Ownable, IERC721Receiver {
 
         uint256 i;
 
-        for (i = 0; i < nftIndex_ % count; ++i) {
+        for (i = 0; i < nftIndex_.mod(count); ++i) {
           r /= size;
         }
 
-        r = r % size;
+        r %= size;
 
+        // Iterate through all slots.
         for (i = 0; i < slotMap[collectionId_].length; ++i) {
             if (r >= slotMap[collectionId_][i].size) {
                 r -= slotMap[collectionId_][i].size;
