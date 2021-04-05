@@ -2,7 +2,7 @@
 
 Demo at https://blindboxes-testnet.vercel.app/ (still under contruction)
 
-# Testnet Smart Contracts (Rirkeby)
+# Testnet Smart Contracts (Rinkeby)
 
 - NFTMaster [0xD58081AA203eE0321eD965206de040FCd49B807c](https://rinkeby.etherscan.io/address/0xD58081AA203eE0321eD965206de040FCd49B807c)
 
