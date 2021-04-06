@@ -19,7 +19,7 @@ function appendZeroes(value, count) {
   return result;
 }
 
-contract('NFTMaster', ([dev, curator, artist, buyer0, buyer1, feeTo, randomGuy]) => {
+contract('NFTMaster', ([dev, curator, artist, buyer0, buyer1, feeTo, randomGuy, linkToken]) => {
   beforeEach(async () => {
     // Mock USDC, 100 million, then transfer to buyer0, and buyer1 each 10 million
     this.baseToken = await MockERC20.new("Mock USDC", "USDC", appendZeroes(1, 26), { from: dev });
@@ -46,6 +46,7 @@ contract('NFTMaster', ([dev, curator, artist, buyer0, buyer1, feeTo, randomGuy])
 
     await this.nftMaster.setBaseToken(this.baseToken.address, { from: dev });
     await this.nftMaster.setBlesToken(this.blesToken.address, { from: dev });
+    await this.nftMaster.setLinkToken(linkToken, { from: dev });
     await this.nftMaster.setLinkAccessor(this.linkAccessor.address, { from: dev });
     await this.nftMaster.setFeeTo(feeTo, { from: dev });
   });
@@ -89,7 +90,7 @@ contract('NFTMaster', ([dev, curator, artist, buyer0, buyer1, feeTo, randomGuy])
     await this.nftMaster.addNFTToCollection(3, 1, appendZeroes(3, 20), {from: curator});
 
     // Publish
-    await this.nftMaster.publishCollection(1, 0, 0, {from: curator});
+    await this.nftMaster.publishCollection(1, [linkToken], 0, 0, {from: curator});
 
     // View the published collection.
     const collection = await this.nftMaster.allCollections(1, {from: buyer0});

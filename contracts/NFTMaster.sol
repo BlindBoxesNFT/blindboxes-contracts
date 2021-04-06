@@ -410,7 +410,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
         return i;
     }
 
-    function publishCollection(uint256 collectionId_, uint256 amountInMax_, uint256 deadline_) external {
+    function publishCollection(uint256 collectionId_, address[] calldata path, uint256 amountInMax_, uint256 deadline_) external {
         require(allCollections[collectionId_].owner == _msgSender(), "Only owner can publish");
 
         uint256 actualSize = nftsByCollectionId[collectionId_].length;
@@ -425,7 +425,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
         // Now buy LINK. Here is some math for calculating the time of calls needed from ChainLink.
         uint256 count = randomnessCount(actualSize);
         uint256 times = (actualSize + count - 1) / count;  // Math.ceil
-        buyLink(times, amountInMax_, deadline_);
+        buyLink(times, path, amountInMax_, deadline_);
 
         allCollections[collectionId_].timesToCall = times;
 
@@ -461,20 +461,23 @@ contract NFTMaster is Ownable, IERC721Receiver {
         emit UnpublishCollection(msg.sender, collectionId_);
     }
 
-    function buyLink(uint256 times_, uint256 amountInMax_, uint256 deadline_) internal virtual {
+    function buyLink(uint256 times_, address[] calldata path, uint256 amountInMax_, uint256 deadline_) internal virtual {
+        require(path[path.length.sub(1)] == address(linkToken), "Last token must be LINK");
+
         uint256 amountToBuy = linkCost.mul(times_);
 
-        address[] memory path = new address[](3);
-        path[0] = address(baseToken);
-        path[1] = address(wETH);
-        path[2] = address(linkToken);
-
-        router.swapTokensForExactTokens(
-            amountToBuy,
-            amountInMax_,
-            path,
-            address(linkAccessor),
-            deadline_);
+        if (path.length == 1) {
+            // Pay with LINK.
+            linkToken.transferFrom(msg.sender, address(this), amountToBuy);
+        } else {
+            // Pay with other token.
+            router.swapTokensForExactTokens(
+                amountToBuy,
+                amountInMax_,
+                path,
+                address(linkAccessor),
+                deadline_);
+        }
     }
 
     function drawBoxes(uint256 collectionId_, uint256 times_) external {
