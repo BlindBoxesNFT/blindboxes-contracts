@@ -69,16 +69,20 @@ contract NFTMaster is Ownable, IERC721Receiver {
         address owner;
         string name;
         uint256 size;
-        uint256 totalPrice;
-        uint256 averagePrice;
+        uint256 commissionRate;  // for curator (owner)
         bool willAcceptBLES;
-        uint256 publishedAt;  // time that published.
         address[] collaborators;
 
-        // The following are runtime variables
+        // The following are runtime variables before publish
+        uint256 totalPrice;
+        uint256 averagePrice;
+        uint256 fee;
+        uint256 commission;
+
+        // The following are runtime variables after publish
+        uint256 publishedAt;  // time that published.
         uint256 timesToCall;
         uint256 soldCount;
-        uint256 fee;
     }
 
     // collectionId => Collection
@@ -230,13 +234,14 @@ contract NFTMaster is Ownable, IERC721Receiver {
     }
 
     function withdrawNFT(uint256 nftId_) external {
-        require(allNFTs[nftId_].owner == msg.sender && allNFTs[nftId_].collectionId == 0, "Not owned");
+        require(allNFTs[nftId_].owner == _msgSender() && allNFTs[nftId_].collectionId == 0, "Not owned");
         _withdrawNFT(nftId_, false);
     }
 
     function claimNFT(uint256 collectionId_, uint256 index_) external {
-        require(allCollections[collectionId_].soldCount ==
-                allCollections[collectionId_].size, "Not finished");
+        Collection storage collection = allCollections[collectionId_];
+
+        require(collection.soldCount == collection.size, "Not finished");
 
         address winner = getWinner(collectionId_, index_);
 
@@ -247,11 +252,13 @@ contract NFTMaster is Ownable, IERC721Receiver {
         require(allNFTs[nftId].collectionId == collectionId_, "Already claimed");
 
         if (allNFTs[nftId].paid == 0) {
-            if (allCollections[collectionId_].willAcceptBLES) {
-                allNFTs[nftId].paid = allNFTs[nftId].price;
+            if (collection.willAcceptBLES) {
+                allNFTs[nftId].paid = allNFTs[nftId].price.mul(
+                    FEE_BASE.sub(collection.commissionRate)).div(FEE_BASE);
                 IERC20(blesToken).safeTransfer(allNFTs[nftId].owner, allNFTs[nftId].paid);
             } else {
-                allNFTs[nftId].paid = allNFTs[nftId].price.mul(FEE_BASE.sub(feeRate)).div(FEE_BASE);
+                allNFTs[nftId].paid = allNFTs[nftId].price.mul(
+                    FEE_BASE.sub(feeRate).sub(collection.commissionRate)).div(FEE_BASE);
                 IERC20(baseToken).safeTransfer(allNFTs[nftId].owner, allNFTs[nftId].paid);
             }
         }
@@ -260,34 +267,52 @@ contract NFTMaster is Ownable, IERC721Receiver {
     }
 
     function claimRevenue(uint256 collectionId_, uint256 index_) external {
-        require(allCollections[collectionId_].soldCount ==
-                allCollections[collectionId_].size, "Not finished");
+        Collection storage collection = allCollections[collectionId_];
+
+        require(collection.soldCount == collection.size, "Not finished");
 
         uint256 nftId = nftsByCollectionId[collectionId_][index_];
 
         require(allNFTs[nftId].owner == _msgSender() && allNFTs[nftId].collectionId > 0, "NFT not claimed");
 
         if (allNFTs[nftId].paid == 0) {
-            if (allCollections[collectionId_].willAcceptBLES) {
-                allNFTs[nftId].paid = allNFTs[nftId].price;
+            if (collection.willAcceptBLES) {
+                allNFTs[nftId].paid = allNFTs[nftId].price.mul(
+                    FEE_BASE.sub(collection.commissionRate)).div(FEE_BASE);
                 IERC20(blesToken).safeTransfer(allNFTs[nftId].owner, allNFTs[nftId].paid);
             } else {
-                allNFTs[nftId].paid = allNFTs[nftId].price.mul(FEE_BASE.sub(feeRate)).div(FEE_BASE);
+                allNFTs[nftId].paid = allNFTs[nftId].price.mul(
+                    FEE_BASE.sub(feeRate).sub(collection.commissionRate)).div(FEE_BASE);
                 IERC20(baseToken).safeTransfer(allNFTs[nftId].owner, allNFTs[nftId].paid);
             }
         }
     }
 
-    function claimFee(uint256 collectionId_) external {
+    function claimCommission(uint256 collectionId_) external {
         Collection storage collection = allCollections[collectionId_];
 
-        require(collection.soldCount ==
-                collection.size, "Not finished");
-        require(!collection.willAcceptBLES, "No fee if you accept BLES");
+        require(_msgSender() == collection.owner, "Only curator can claim");
+        require(collection.soldCount == collection.size, "Not finished");
 
-        if (feeTo != address(0)) {
-            IERC20(baseToken).safeTransfer(feeTo, collection.fee);
+        if (collection.willAcceptBLES) {
+            IERC20(blesToken).safeTransfer(collection.owner, collection.commission);
+        } else {
+            IERC20(baseToken).safeTransfer(collection.owner, collection.commission);
         }
+
+        // Mark it claimed.
+        collection.commission = 0;
+    }
+
+    function claimFee(uint256 collectionId_) external {
+        require(feeTo != address(0), "Please set feeTo first");
+
+        Collection storage collection = allCollections[collectionId_];
+
+        require(collection.soldCount == collection.size, "Not finished");
+        require(!collection.willAcceptBLES, "No fee if the curator accepts BLES");
+
+        IERC20(baseToken).safeTransfer(feeTo, collection.fee);
 
         // Mark it claimed.
         collection.fee = 0;
@@ -296,10 +321,12 @@ contract NFTMaster is Ownable, IERC721Receiver {
     function createCollection(
         string calldata name_,
         uint256 size_,
+        uint256 commissionRate_,
         bool willAcceptBLES_,
         address[] calldata collaborators_
     ) external {
         require(size_ >= minimumCollectionSize, "Size too small");
+        require(commissionRate_.add(feeRate) < FEE_BASE, "Too much commission");
 
         if (creatingFee > 0) {
             // Charges BLES for creating the collection.
@@ -307,9 +334,10 @@ contract NFTMaster is Ownable, IERC721Receiver {
         }
 
         Collection memory collection;
-        collection.owner = msg.sender;
+        collection.owner = _msgSender();
         collection.name = name_;
         collection.size = size_;
+        collection.commissionRate = commissionRate_;
         collection.totalPrice = 0;
         collection.averagePrice = 0;
         collection.willAcceptBLES = willAcceptBLES_;
@@ -319,13 +347,13 @@ contract NFTMaster is Ownable, IERC721Receiver {
         uint256 collectionId = _generateNextCollectionId();
 
         allCollections[collectionId] = collection;
-        collectionsByOwner[msg.sender].push(collectionId);
+        collectionsByOwner[_msgSender()].push(collectionId);
 
         for (uint256 i = 0; i < collaborators_.length; ++i) {
             isCollaborator[collectionId][collaborators_[i]] = true;
         }
 
-        emit CreateCollection(msg.sender, collectionId);
+        emit CreateCollection(_msgSender(), collectionId);
     }
 
     function isPublished(uint256 collectionId_) public view returns(bool) {
@@ -333,15 +361,17 @@ contract NFTMaster is Ownable, IERC721Receiver {
     }
 
     function addNFTToCollection(uint256 nftId_, uint256 collectionId_, uint256 price_) external {
+        Collection storage collection = allCollections[collectionId_];
+
         require(allNFTs[nftId_].owner == _msgSender(), "Only NFT owner can add");
-        require(allCollections[collectionId_].owner == _msgSender() ||
+        require(collection.owner == _msgSender() ||
                 isCollaborator[collectionId_][_msgSender()], "Needs collection owner or collaborator");
 
         require(price_ >= nftPriceFloor && price_ <= nftPriceCeil, "Price not in range");
 
         require(allNFTs[nftId_].collectionId == 0, "Already added");
         require(!isPublished(collectionId_), "Collection already published");
-        require(nftsByCollectionId[collectionId_].length < allCollections[collectionId_].size,
+        require(nftsByCollectionId[collectionId_].length < collection.size,
                 "collection full");
 
         allNFTs[nftId_].price = price_;
@@ -351,15 +381,19 @@ contract NFTMaster is Ownable, IERC721Receiver {
         // Push to nftsByCollectionId.
         nftsByCollectionId[collectionId_].push(nftId_);
 
-        allCollections[collectionId_].totalPrice = allCollections[collectionId_].totalPrice.add(price_);
+        collection.totalPrice = collection.totalPrice.add(price_);
 
-        if (!allCollections[collectionId_].willAcceptBLES) {
-            allCollections[collectionId_].fee = allCollections[collectionId_].fee.add(price_.mul(feeRate).div(FEE_BASE));
+        if (!collection.willAcceptBLES) {
+            collection.fee = collection.fee.add(price_.mul(feeRate).div(FEE_BASE));
         }
+
+        collection.commission = collection.commission.add(price_.mul(collection.commissionRate).div(FEE_BASE));
     }
 
     function editNFTInCollection(uint256 nftId_, uint256 collectionId_, uint256 price_) external {
-        require(allCollections[collectionId_].owner == _msgSender() ||
+        Collection storage collection = allCollections[collectionId_];
+
+        require(collection.owner == _msgSender() ||
                 allNFTs[nftId_].owner == _msgSender(), "Needs collection owner or NFT owner");
 
         require(price_ >= nftPriceFloor && price_ <= nftPriceCeil, "Price not in range");
@@ -367,31 +401,40 @@ contract NFTMaster is Ownable, IERC721Receiver {
         require(allNFTs[nftId_].collectionId == collectionId_, "NFT not in collection");
         require(!isPublished(collectionId_), "Collection already published");
 
-        allCollections[collectionId_].totalPrice = allCollections[collectionId_].totalPrice.add(
-            price_).sub(allNFTs[nftId_].price);
+        collection.totalPrice = collection.totalPrice.add(price_).sub(allNFTs[nftId_].price);
 
-        if (allCollections[collectionId_].willAcceptBLES) {
-            allCollections[collectionId_].fee = allCollections[collectionId_].fee.add(
+        if (collection.willAcceptBLES) {
+            collection.fee = collection.fee.add(
                 price_.mul(feeRate).div(FEE_BASE)).sub(
                     allNFTs[nftId_].price.mul(feeRate).div(FEE_BASE));
         }
+
+        collection.commission = collection.commission.add(
+            price_.mul(collection.commissionRate).div(FEE_BASE)).sub(
+                allNFTs[nftId_].price.mul(collection.commissionRate).div(FEE_BASE));
 
         allNFTs[nftId_].price = price_;  // Change price.
     }
 
     function removeNFTFromCollection(uint256 nftId_, uint256 collectionId_) external {
+        Collection storage collection = allCollections[collectionId_];
+
         require(allNFTs[nftId_].owner == _msgSender() ||
-                allCollections[collectionId_].owner == _msgSender(),
+                collection.owner == _msgSender(),
                 "Only NFT owner or collection owner can remove");
         require(allNFTs[nftId_].collectionId == collectionId_, "NFT not in collection");
         require(!isPublished(collectionId_), "Collection already published");
 
-        allCollections[collectionId_].totalPrice = allCollections[collectionId_].totalPrice.sub(allNFTs[nftId_].price);
+        collection.totalPrice = collection.totalPrice.sub(allNFTs[nftId_].price);
 
-        if (allCollections[collectionId_].willAcceptBLES) {
-            allCollections[collectionId_].fee = allCollections[collectionId_].fee.sub(
-                    allNFTs[nftId_].price.mul(feeRate).div(FEE_BASE));
+        if (collection.willAcceptBLES) {
+            collection.fee = collection.fee.sub(
+                allNFTs[nftId_].price.mul(feeRate).div(FEE_BASE));
         }
+
+        collection.commission = collection.commission.sub(
+            allNFTs[nftId_].price.mul(collection.commissionRate).div(FEE_BASE));
+
 
         allNFTs[nftId_].collectionId = 0;
 
@@ -411,25 +454,27 @@ contract NFTMaster is Ownable, IERC721Receiver {
     }
 
     function publishCollection(uint256 collectionId_, address[] calldata path, uint256 amountInMax_, uint256 deadline_) external {
-        require(allCollections[collectionId_].owner == _msgSender(), "Only owner can publish");
+        Collection storage collection = allCollections[collectionId_];
+
+        require(collection.owner == _msgSender(), "Only owner can publish");
 
         uint256 actualSize = nftsByCollectionId[collectionId_].length;
         require(actualSize >= minimumCollectionSize, "Not enough boxes");
 
-        allCollections[collectionId_].size = actualSize;  // Fit the size.
+        collection.size = actualSize;  // Fit the size.
 
         // Math.ceil(totalPrice / actualSize);
-        allCollections[collectionId_].averagePrice = allCollections[collectionId_].totalPrice.add(actualSize.sub(1)).div(actualSize);
-        allCollections[collectionId_].publishedAt = now;
+        collection.averagePrice = collection.totalPrice.add(actualSize.sub(1)).div(actualSize);
+        collection.publishedAt = now;
 
         // Now buy LINK. Here is some math for calculating the time of calls needed from ChainLink.
         uint256 count = randomnessCount(actualSize);
         uint256 times = (actualSize + count - 1) / count;  // Math.ceil
         buyLink(times, path, amountInMax_, deadline_);
 
-        allCollections[collectionId_].timesToCall = times;
+        collection.timesToCall = times;
 
-        emit PublishCollection(msg.sender, collectionId_);
+        emit PublishCollection(_msgSender(), collectionId_);
     }
 
     function unpublishCollection(uint256 collectionId_) external {
@@ -443,7 +488,6 @@ contract NFTMaster is Ownable, IERC721Receiver {
 
         collection.publishedAt = 0;
         collection.soldCount = 0;
-        collection.fee = 0;
 
         // Now refund to the buyers.
         uint256 length = slotMap[collectionId_].length;
@@ -458,7 +502,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
             }
         }
 
-        emit UnpublishCollection(msg.sender, collectionId_);
+        emit UnpublishCollection(_msgSender(), collectionId_);
     }
 
     function buyLink(uint256 times_, address[] calldata path, uint256 amountInMax_, uint256 deadline_) internal virtual {
@@ -468,7 +512,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
 
         if (path.length == 1) {
             // Pay with LINK.
-            linkToken.transferFrom(msg.sender, address(this), amountToBuy);
+            linkToken.transferFrom(_msgSender(), address(this), amountToBuy);
         } else {
             // Pay with other token.
             router.swapTokensForExactTokens(
@@ -481,11 +525,13 @@ contract NFTMaster is Ownable, IERC721Receiver {
     }
 
     function drawBoxes(uint256 collectionId_, uint256 times_) external {
-        require(allCollections[collectionId_].soldCount.add(times_) <= allCollections[collectionId_].size, "Not enough left");
+        Collection storage collection = allCollections[collectionId_];
 
-        uint256 cost = allCollections[collectionId_].averagePrice.mul(times_);
+        require(collection.soldCount.add(times_) <= collection.size, "Not enough left");
 
-        if (allCollections[collectionId_].willAcceptBLES) {
+        uint256 cost = collection.averagePrice.mul(times_);
+
+        if (collection.willAcceptBLES) {
             IERC20(blesToken).safeTransferFrom(_msgSender(), address(this), cost);
         } else {
             IERC20(baseToken).safeTransferFrom(_msgSender(), address(this), cost);
@@ -496,24 +542,25 @@ contract NFTMaster is Ownable, IERC721Receiver {
         slot.size = times_;
         slotMap[collectionId_].push(slot);
 
-        allCollections[collectionId_].soldCount = allCollections[collectionId_].soldCount.add(times_);
+        collection.soldCount = collection.soldCount.add(times_);
 
-        uint256 startFromIndex = allCollections[collectionId_].size - allCollections[collectionId_].timesToCall;
+        uint256 startFromIndex = collection.size.sub(collection.timesToCall);
         for (uint256 i = startFromIndex;
-                 i < allCollections[collectionId_].soldCount;
+                 i < collection.soldCount;
                  ++i) {
             getRandomNumber(collectionId_, i.sub(startFromIndex));
         }
     }
 
     function getWinner(uint256 collectionId_, uint256 nftIndex_) public view returns(address) {
-        if (allCollections[collectionId_].soldCount <
-                allCollections[collectionId_].size) {
+        Collection storage collection = allCollections[collectionId_];
+
+        if (collection.soldCount < collection.size) {
             // Not sold all yet.
             return address(0);
         }
 
-        uint256 size = allCollections[collectionId_].size;
+        uint256 size = collection.size;
         uint256 count = randomnessCount(size);
 
         uint256 lastRandomnessIndex = size.sub(1).div(count);

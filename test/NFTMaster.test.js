@@ -52,8 +52,8 @@ contract('NFTMaster', ([dev, curator, artist, buyer0, buyer1, feeTo, randomGuy, 
   });
 
   it('create, add, and buy with USDC', async () => {
-    // Curator create an empty collection.
-    await this.nftMaster.createCollection("Art gallery", 3, false, [artist],  { from: curator });
+    // Curator create an empty collection, charges 10% commission.
+    await this.nftMaster.createCollection("Art gallery", 3, 1000, false, [artist],  { from: curator });
     const collectionId = await this.nftMaster.nextCollectionId();
     assert.equal(collectionId.valueOf(), 1);
 
@@ -97,10 +97,14 @@ contract('NFTMaster', ([dev, curator, artist, buyer0, buyer1, feeTo, randomGuy, 
     assert.equal(collection[0], curator);  // owner
     assert.equal(collection[1], "Art gallery");  // name
     assert.equal(collection[2].valueOf(), 3);  // size
-    assert.equal(collection[3].valueOf(), 6e20);  // totalPrice
-    assert.equal(collection[4].valueOf(), 2e20);  // averagePrice
-    assert.equal(collection[5].valueOf(), 0);  // willAcceptBLES
-    assert.notEqual(collection[6].valueOf(), 0);  // isPublished
+    assert.equal(collection[3].valueOf(), 1000);  // commissionRate
+    assert.equal(collection[4].valueOf(), 0);  // willAcceptBLES
+    assert.equal(collection[5].valueOf(), 6e20);  // totalPrice
+    assert.equal(collection[6].valueOf(), 2e20);  // averagePrice
+    assert.equal(collection[7].valueOf(), 3e19);  // fee
+    assert.equal(collection[8].valueOf(), 6e19);  // commission
+
+    assert.notEqual(collection[9].valueOf(), 0);  // isPublished
 
     // Withdraw nftId3 because we didn't use it.
     await this.nftMaster.withdrawNFT(nftId3, {from: artist});
@@ -140,15 +144,20 @@ contract('NFTMaster', ([dev, curator, artist, buyer0, buyer1, feeTo, randomGuy, 
     await this.nftMaster.claimNFT(1, buyer1NFTIdArray[0] - 1, {from: buyer1});
     await this.nftMaster.claimNFT(1, buyer1NFTIdArray[1] - 1, {from: buyer1});
 
-    // Curator and artist all get money, after 5% fee deducted.
+    // Curator and artist all get money, after 5% fee and 10% commission deducted.
     const curatorBalance = await this.baseToken.balanceOf(curator, {from: curator});
-    assert.equal(curatorBalance.valueOf(), 38e19);
+    assert.equal(curatorBalance.valueOf(), 34e19);
     const artistBalance = await this.baseToken.balanceOf(artist, {from: artist});
-    assert.equal(artistBalance.valueOf(), 19e19);
+    assert.equal(artistBalance.valueOf(), 17e19);
 
     // feeTo got fee.
     await this.nftMaster.claimFee(1, {from: randomGuy});
     const feeToBalance = await this.baseToken.balanceOf(feeTo, {from: feeTo});
     assert.equal(feeToBalance.valueOf(), 3e19);
+
+    // curator got commission.
+    await this.nftMaster.claimCommission(1, {from: curator});
+    const curatorNewBalance = await this.baseToken.balanceOf(curator, {from: curator});
+    assert.equal(curatorNewBalance.valueOf(), 40e19);  // 34 + 6 = 40
   });
 });
