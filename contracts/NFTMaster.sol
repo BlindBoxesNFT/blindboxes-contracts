@@ -162,7 +162,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
         creatingFee = creatingFee_;
     }
 
-    function setUniswapV2Router(IUniswapV2Router02 router_) external {
+    function setUniswapV2Router(IUniswapV2Router02 router_) external onlyOwner {
         router = router_;
     }
 
