@@ -106,6 +106,8 @@ contract('NFTMaster', ([dev, curator, artist, buyer0, buyer1, feeTo, randomGuy, 
 
     assert.notEqual(collection[9].valueOf(), 0);  // isPublished
 
+    assert.equal(await this.nftMaster.collaborators(1, 0), artist);
+
     // Withdraw nftId3 because we didn't use it.
     await this.nftMaster.withdrawNFT(nftId3, {from: artist});
     assert.equal(await this.mockDog.ownerOf(1), artist);

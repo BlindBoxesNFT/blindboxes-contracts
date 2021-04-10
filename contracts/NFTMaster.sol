@@ -71,7 +71,6 @@ contract NFTMaster is Ownable, IERC721Receiver {
         uint256 size;
         uint256 commissionRate;  // for curator (owner)
         bool willAcceptBLES;
-        address[] collaborators;
 
         // The following are runtime variables before publish
         uint256 totalPrice;
@@ -92,7 +91,10 @@ contract NFTMaster is Ownable, IERC721Receiver {
     mapping(address => uint256[]) public collectionsByOwner;
 
     // collectionId => who => true/false
-    mapping(uint256 => mapping(address => bool)) isCollaborator;
+    mapping(uint256 => mapping(address => bool)) public isCollaborator;
+
+    // collectionId => collaborators
+    mapping(uint256 => address[]) public collaborators;
 
     // collectionId => nftId[]
     mapping(uint256 => uint256[]) public nftsByCollectionId;
@@ -342,12 +344,12 @@ contract NFTMaster is Ownable, IERC721Receiver {
         collection.averagePrice = 0;
         collection.willAcceptBLES = willAcceptBLES_;
         collection.publishedAt = 0;
-        collection.collaborators = collaborators_;
 
         uint256 collectionId = _generateNextCollectionId();
 
         allCollections[collectionId] = collection;
         collectionsByOwner[_msgSender()].push(collectionId);
+        collaborators[collectionId] = collaborators_;
 
         for (uint256 i = 0; i < collaborators_.length; ++i) {
             isCollaborator[collectionId][collaborators_[i]] = true;
