@@ -39,7 +39,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
     address public feeTo;
 
     // Collection creating fee.
-    uint256 creatingFee = 0;  // By default, 0
+    uint256 public creatingFee = 0;  // By default, 0
 
     IUniswapV2Router02 public router;
 
@@ -63,7 +63,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
     mapping(address => uint256[]) public nftsByOwner;
 
     // tokenAddress => tokenId => nftId
-    mapping(address => mapping(uint256 => uint256)) nftIdMap;
+    mapping(address => mapping(uint256 => uint256)) public nftIdMap;
 
     struct Collection {
         address owner;
@@ -194,7 +194,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
         return ++nextCollectionId;
     }
 
-    function depositNFT(address tokenAddress_, uint256 tokenId_) external {
+    function _depositNFT(address tokenAddress_, uint256 tokenId_) private returns(uint256) {
         IERC721(tokenAddress_).safeTransferFrom(_msgSender(), address(this), tokenId_);
 
         NFT memory nft;
@@ -217,27 +217,23 @@ contract NFTMaster is Ownable, IERC721Receiver {
         nftsByOwner[_msgSender()].push(nftId);
 
         emit NFTDeposit(_msgSender(), tokenAddress_, tokenId_);
+        return nftId;
     }
 
-    function _withdrawNFT(uint256 nftId_, bool isClaim_) private {
+    function _withdrawNFT(address who_, uint256 nftId_, bool isClaim_) private {
         allNFTs[nftId_].owner = address(0);
         allNFTs[nftId_].collectionId = 0;
 
         address tokenAddress = allNFTs[nftId_].tokenAddress;
         uint256 tokenId = allNFTs[nftId_].tokenId;
 
-        IERC721(tokenAddress).safeTransferFrom(address(this), _msgSender(), tokenId);
+        IERC721(tokenAddress).safeTransferFrom(address(this), who_, tokenId);
 
         if (isClaim_) {
-            emit NFTClaim(_msgSender(), tokenAddress, tokenId);
+            emit NFTClaim(who_, tokenAddress, tokenId);
         } else {
-            emit NFTWithdraw(_msgSender(), tokenAddress, tokenId);
+            emit NFTWithdraw(who_, tokenAddress, tokenId);
         }
-    }
-
-    function withdrawNFT(uint256 nftId_) external {
-        require(allNFTs[nftId_].owner == _msgSender() && allNFTs[nftId_].collectionId == 0, "Not owned");
-        _withdrawNFT(nftId_, false);
     }
 
     function claimNFT(uint256 collectionId_, uint256 index_) external {
@@ -265,7 +261,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
             }
         }
 
-        _withdrawNFT(nftId, true);
+        _withdrawNFT(_msgSender(), nftId, true);
     }
 
     function claimRevenue(uint256 collectionId_, uint256 index_) external {
@@ -362,7 +358,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
         return allCollections[collectionId_].publishedAt > 0;
     }
 
-    function addNFTToCollection(uint256 nftId_, uint256 collectionId_, uint256 price_) external {
+    function _addNFTToCollection(uint256 nftId_, uint256 collectionId_, uint256 price_) private {
         Collection storage collection = allCollections[collectionId_];
 
         require(allNFTs[nftId_].owner == _msgSender(), "Only NFT owner can add");
@@ -392,6 +388,11 @@ contract NFTMaster is Ownable, IERC721Receiver {
         collection.commission = collection.commission.add(price_.mul(collection.commissionRate).div(FEE_BASE));
     }
 
+    function addNFTToCollection(address tokenAddress_, uint256 tokenId_, uint256 collectionId_, uint256 price_) external {
+        uint256 nftId = _depositNFT(tokenAddress_, tokenId_);
+        _addNFTToCollection(nftId, collectionId_, price_);
+    }
+
     function editNFTInCollection(uint256 nftId_, uint256 collectionId_, uint256 price_) external {
         Collection storage collection = allCollections[collectionId_];
 
@@ -405,7 +406,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
 
         collection.totalPrice = collection.totalPrice.add(price_).sub(allNFTs[nftId_].price);
 
-        if (collection.willAcceptBLES) {
+        if (!collection.willAcceptBLES) {
             collection.fee = collection.fee.add(
                 price_.mul(feeRate).div(FEE_BASE)).sub(
                     allNFTs[nftId_].price.mul(feeRate).div(FEE_BASE));
@@ -418,7 +419,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
         allNFTs[nftId_].price = price_;  // Change price.
     }
 
-    function removeNFTFromCollection(uint256 nftId_, uint256 collectionId_) external {
+    function _removeNFTFromCollection(uint256 nftId_, uint256 collectionId_) private {
         Collection storage collection = allCollections[collectionId_];
 
         require(allNFTs[nftId_].owner == _msgSender() ||
@@ -429,7 +430,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
 
         collection.totalPrice = collection.totalPrice.sub(allNFTs[nftId_].price);
 
-        if (collection.willAcceptBLES) {
+        if (!collection.willAcceptBLES) {
             collection.fee = collection.fee.sub(
                 allNFTs[nftId_].price.mul(feeRate).div(FEE_BASE));
         }
@@ -447,6 +448,12 @@ contract NFTMaster is Ownable, IERC721Receiver {
         nftsByCollectionId[collectionId_][index] = lastNFTId;
         allNFTs[lastNFTId].indexInCollection = index;
         nftsByCollectionId[collectionId_].pop();
+    }
+
+    function removeNFTFromCollection(uint256 nftId_, uint256 collectionId_) external {
+        address nftOwner = allNFTs[nftId_].owner;
+        _removeNFTFromCollection(nftId_, collectionId_);
+        _withdrawNFT(nftOwner, nftId_, false);
     }
 
     function randomnessCount(uint256 size_) public pure returns(uint256){
