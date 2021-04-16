@@ -478,7 +478,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
 
         // Now buy LINK. Here is some math for calculating the time of calls needed from ChainLink.
         uint256 count = randomnessCount(actualSize);
-        uint256 times = (actualSize + count - 1) / count;  // Math.ceil
+        uint256 times = actualSize.add(count).sub(1).div(count);  // Math.ceil
         buyLink(times, path, amountInMax_, deadline_);
 
         collection.timesToCall = times;
@@ -521,8 +521,15 @@ contract NFTMaster is Ownable, IERC721Receiver {
 
         if (path.length == 1) {
             // Pay with LINK.
-            linkToken.transferFrom(_msgSender(), address(this), amountToBuy);
+            linkToken.transferFrom(_msgSender(), address(linkAccessor), amountToBuy);
         } else {
+            if (IERC20(path[0]).allowance(address(this), address(router)) < amountInMax_) {
+                IERC20(path[0]).approve(address(router), amountInMax_);
+            }
+
+            uint256[] memory amounts = router.getAmountsIn(amountToBuy, path);
+            IERC20(path[0]).transferFrom(_msgSender(), address(this), amounts[0]);
+
             // Pay with other token.
             router.swapTokensForExactTokens(
                 amountToBuy,
