@@ -479,7 +479,10 @@ contract NFTMaster is Ownable, IERC721Receiver {
         // Now buy LINK. Here is some math for calculating the time of calls needed from ChainLink.
         uint256 count = randomnessCount(actualSize);
         uint256 times = actualSize.add(count).sub(1).div(count);  // Math.ceil
-        buyLink(times, path, amountInMax_, deadline_);
+
+        if (linkCost > 0 && address(linkAccessor) != address(0)) {
+            buyLink(times, path, amountInMax_, deadline_);
+        }
 
         collection.timesToCall = times;
 
@@ -564,7 +567,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
         for (uint256 i = startFromIndex;
                  i < collection.soldCount;
                  ++i) {
-            getRandomNumber(collectionId_, i.sub(startFromIndex));
+            requestRandomNumber(collectionId_, i.sub(startFromIndex));
         }
     }
 
@@ -611,10 +614,25 @@ contract NFTMaster is Ownable, IERC721Receiver {
         require(false, "r overflow");
     }
 
-    function getRandomNumber(uint256 collectionId_, uint256 index_) private {
-        bytes32 requestId = linkAccessor.requestRandomness(index_);
-        requestInfoMap[requestId].collectionId = collectionId_;
-        requestInfoMap[requestId].index = index_;
+    function psuedoRandomness() public view returns(uint256) {
+        return uint256(keccak256(abi.encodePacked(
+            block.timestamp + block.difficulty +
+            ((uint256(keccak256(abi.encodePacked(block.coinbase)))) / (now)) +
+            block.gaslimit + 
+            ((uint256(keccak256(abi.encodePacked(_msgSender())))) / (now)) +
+            block.number
+        )));
+    }
+
+    function requestRandomNumber(uint256 collectionId_, uint256 index_) private {
+        if (address(linkAccessor) != address(0)) {
+            bytes32 requestId = linkAccessor.requestRandomness(index_);
+            requestInfoMap[requestId].collectionId = collectionId_;
+            requestInfoMap[requestId].index = index_;
+        } else {
+            // Uses psuedo random number instead, and doesn't involve request / callback.
+            useRandomness(collectionId_, index_, psuedoRandomness());
+        }
     }
 
     /**
@@ -626,15 +644,23 @@ contract NFTMaster is Ownable, IERC721Receiver {
         uint256 collectionId = requestInfoMap[requestId].collectionId;
         uint256 randomnessIndex = requestInfoMap[requestId].index;
 
-        uint256 size = allCollections[collectionId].size;
+        useRandomness(collectionId, randomnessIndex, randomness);
+    }
+
+    function useRandomness(
+        uint256 collectionId_,
+        uint256 randomnessIndex_,
+        uint256 randomness_
+    ) private {
+        uint256 size = allCollections[collectionId_].size;
         bool[] memory filled = new bool[](size);
 
         uint256 r;
         uint256 i;
         uint256 count;
 
-        for (i = 0; i < randomnessIndex; ++i) {
-            r = nftMapping[collectionId][i];
+        for (i = 0; i < randomnessIndex_; ++i) {
+            r = nftMapping[collectionId_][i];
             while (r > 0) {
                 filled[r.mod(size)] = true;
                 r = r.div(size);
@@ -646,9 +672,9 @@ contract NFTMaster is Ownable, IERC721Receiver {
 
         uint256 t;
 
-        while (randomness > 0 && count < size) {
-            t = randomness.mod(size);
-            randomness = randomness.div(size);
+        while (randomness_ > 0 && count < size) {
+            t = randomness_.mod(size);
+            randomness_ = randomness_.div(size);
 
             t = t.mod(size.sub(count)).add(1);
 
@@ -668,6 +694,6 @@ contract NFTMaster is Ownable, IERC721Receiver {
             count = count.add(1);
         }
 
-        nftMapping[collectionId][randomnessIndex] = r;
+        nftMapping[collectionId_][randomnessIndex_] = r;
     }
 }

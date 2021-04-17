@@ -109,7 +109,7 @@ contract('NFTMaster', ([dev, curator, artist, buyer0, buyer1, feeTo, randomGuy, 
     await this.baseToken.approve(this.nftMaster.address, appendZeroes(4e20), {from: buyer1});
     await this.nftMaster.drawBoxes(collectionId, 2, {from: buyer1});
 
-    // Trigger randomness
+    // Trigger randomness (mock)
     await this.linkAccessor.triggerRandomness({from: dev});
 
     const rrr = await this.nftMaster.nftMapping(collectionId, 0, {from: randomGuy});
