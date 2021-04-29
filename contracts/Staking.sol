@@ -312,15 +312,10 @@ contract Staking is Ownable {
         uint256 rewardTotal = user.rewardAmount.add(pending).add(extra);
         require(rewardTotal >= _amount, "Not enough reward");
 
-        if (now > pool.endBlock + claimWaitTime) {
-            // If the pool ended long time ago, no need to burn.
-            blesToken.transfer(address(msg.sender), _amount);
-        } else {
-            // Burn 50%.
-            uint256 rewardBurn = _amount.div(2);
-            blesToken.burn(rewardBurn);
-            blesToken.transfer(address(msg.sender), _amount.sub(rewardBurn));
-        }
+        // Burn 50%.
+        uint256 rewardBurn = _amount.div(2);
+        blesToken.burn(rewardBurn);
+        blesToken.transfer(address(msg.sender), _amount.sub(rewardBurn));
 
         user.rewardAmount = rewardTotal.sub(_amount);
         user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(PER_SHARE_SIZE);
