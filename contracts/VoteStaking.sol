@@ -29,6 +29,7 @@ contract VoteStaking is Ownable, IVoteStaking {
 
     // Info of the pool.
     struct PoolInfo {
+        uint256 totalBalance;
         uint256 rewardPerBlock;
         uint256 startBlock;
         uint256 endBlock;
@@ -84,7 +85,7 @@ contract VoteStaking is Ownable, IVoteStaking {
         view
         returns (uint256)
     {
-        if (_to <= _from) {
+        if (_to <= _from || _from > poolInfo.endBlock || _to < poolInfo.startBlock) {
             return 0;
         }
 
@@ -101,14 +102,13 @@ contract VoteStaking is Ownable, IVoteStaking {
         returns (uint256)
     {
         UserInfo storage user = userInfo[_user];
-        uint256 tokenTotal = blesToken.balanceOf(address(this));
 
-        uint256 accRewardPerShare = 0;
+        uint256 accRewardPerShare = poolInfo.accRewardPerShare;
 
-        if (block.number > poolInfo.lastRewardBlock && tokenTotal > 0) {
+        if (block.number > poolInfo.lastRewardBlock && poolInfo.totalBalance > 0) {
             uint256 reward = getReward(poolInfo.lastRewardBlock, block.number);
-            accRewardPerShare = poolInfo.accRewardPerShare.add(
-                reward.mul(PER_SHARE_SIZE).div(tokenTotal)
+            accRewardPerShare = accRewardPerShare.add(
+                reward.mul(PER_SHARE_SIZE).div(poolInfo.totalBalance)
             );
         }
 
@@ -121,8 +121,8 @@ contract VoteStaking is Ownable, IVoteStaking {
         if (block.number <= poolInfo.lastRewardBlock) {
             return;
         }
-        uint256 tokenTotal = blesToken.balanceOf(address(this));
-        if (tokenTotal == 0) {
+
+        if (poolInfo.totalBalance == 0) {
             poolInfo.lastRewardBlock = block.number;
             return;
         }
@@ -130,7 +130,7 @@ contract VoteStaking is Ownable, IVoteStaking {
         uint256 reward = getReward(poolInfo.lastRewardBlock, block.number);
 
         poolInfo.accRewardPerShare = poolInfo.accRewardPerShare.add(
-            reward.mul(PER_SHARE_SIZE).div(tokenTotal)
+            reward.mul(PER_SHARE_SIZE).div(poolInfo.totalBalance)
         );
 
         poolInfo.lastRewardBlock = block.number;
@@ -157,6 +157,7 @@ contract VoteStaking is Ownable, IVoteStaking {
             address(this),
             _amount
         );
+        poolInfo.totalBalance = poolInfo.totalBalance.add(_amount);
 
         user.amount = user.amount.add(_amount);
         user.rewardDebt = user.amount.mul(poolInfo.accRewardPerShare).div(PER_SHARE_SIZE);
@@ -185,6 +186,8 @@ contract VoteStaking is Ownable, IVoteStaking {
         user.rewardDebt = 0;
 
         blesToken.transfer(_who, userAmount);
+        poolInfo.totalBalance = poolInfo.totalBalance.sub(userAmount);
+
         emit Withdraw(_who, userAmount);
 
         return userAmount;
@@ -210,5 +213,10 @@ contract VoteStaking is Ownable, IVoteStaking {
         emit Claim(_who, rewardTotal);
 
         return rewardTotal;
+    }
+
+    function getUserStakedAmount(address _who) external override view returns(uint256) {
+        UserInfo storage user = userInfo[_who];
+        return user.amount;
     }
 }

@@ -32,6 +32,7 @@ contract Staking is Ownable {
     // Info of each pool.
     struct PoolInfo {
         IERC20 token; // Address of token contract.
+        uint256 totalBalance;
         uint256 rewardPerBlock;
         uint256 startBlock;
         uint256 endBlock;
@@ -137,6 +138,7 @@ contract Staking is Ownable {
         poolInfo.push(
             PoolInfo({
                 token: _token,
+                totalBalance: 0,
                 rewardPerBlock: _rewardPerBlock,
                 startBlock: _startBlock,
                 endBlock: _endBlock,
@@ -169,7 +171,7 @@ contract Staking is Ownable {
         view
         returns (uint256)
     {
-        if (_to <= _from) {
+        if (_to <= _from || _from > poolInfo[_pid].endBlock || _to < poolInfo[_pid].startBlock) {
             return 0;
         }
 
@@ -186,14 +188,13 @@ contract Staking is Ownable {
     {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][_user];
-        uint256 tokenTotal = pool.token.balanceOf(address(this));
 
-        uint256 accRewardPerShare = 0;
+        uint256 accRewardPerShare = pool.accRewardPerShare;
 
-        if (block.number > pool.lastRewardBlock && tokenTotal > 0) {
+        if (block.number > pool.lastRewardBlock && pool.totalBalance > 0) {
             uint256 reward = getReward(_pid, pool.lastRewardBlock, block.number);
-            accRewardPerShare = pool.accRewardPerShare.add(
-                reward.mul(PER_SHARE_SIZE).div(tokenTotal)
+            accRewardPerShare = accRewardPerShare.add(
+                reward.mul(PER_SHARE_SIZE).div(pool.totalBalance)
             );
         }
 
@@ -220,8 +221,7 @@ contract Staking is Ownable {
         if (block.number <= pool.lastRewardBlock) {
             return;
         }
-        uint256 tokenTotal = pool.token.balanceOf(address(this));
-        if (tokenTotal == 0) {
+        if (pool.totalBalance == 0) {
             pool.lastRewardBlock = block.number;
             return;
         }
@@ -229,7 +229,7 @@ contract Staking is Ownable {
         uint256 reward = getReward(_pid, pool.lastRewardBlock, block.number);
 
         pool.accRewardPerShare = pool.accRewardPerShare.add(
-            reward.mul(PER_SHARE_SIZE).div(tokenTotal)
+            reward.mul(PER_SHARE_SIZE).div(pool.totalBalance)
         );
 
         pool.lastRewardBlock = block.number;
@@ -269,13 +269,14 @@ contract Staking is Ownable {
     function withdraw(uint256 _pid, uint256 _amount) external {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
-        require(user.amount >= _amount, "withdraw: not good");
-
-        require(_pid != votingPoolId || block.number >= userVoteEndBlock[msg.sender],
-                "Locked for voting");
 
         if (_pid == votingPoolId) {
+            require(block.number >= userVoteEndBlock[msg.sender] ||
+                    user.amount.sub(voteStaking.getUserStakedAmount(msg.sender)) >= _amount,
+                    "Withdraw more than staked - locked");
             voteStaking.withdraw(msg.sender);
+        } else {
+            require(user.amount >= _amount, "Withdraw more than staked");
         }
 
         updatePool(_pid);
@@ -311,22 +312,26 @@ contract Staking is Ownable {
         uint256 rewardTotal = user.rewardAmount.add(pending).add(extra);
         require(rewardTotal >= _amount, "Not enough reward");
 
-        uint256 rewardBurn = _amount.div(2);
-
-        blesToken.burn(rewardBurn);
-        blesToken.transfer(address(msg.sender), _amount.sub(rewardBurn));
+        if (now > pool.endBlock + claimWaitTime) {
+            // If the pool ended long time ago, no need to burn.
+            blesToken.transfer(address(msg.sender), _amount);
+        } else {
+            // Burn 50%.
+            uint256 rewardBurn = _amount.div(2);
+            blesToken.burn(rewardBurn);
+            blesToken.transfer(address(msg.sender), _amount.sub(rewardBurn));
+        }
 
         user.rewardAmount = rewardTotal.sub(_amount);
         user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(PER_SHARE_SIZE);
 
-        emit ClaimNow(msg.sender, _pid, rewardTotal);
+        emit ClaimNow(msg.sender, _pid, _amount);
     }
 
     // Request to claim reward later.
     function claimLater(uint256 _pid, uint256 _amount) external {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
-
 
         uint256 extra = 0;
         if (_pid == votingPoolId) {
@@ -373,6 +378,11 @@ contract Staking is Ownable {
         uint256 _optionCount,
         uint256 _rewardPerBlock
     ) external onlyOwner {
+        if (proposals.length > 0) {
+            require(block.number >= proposals[proposals.length - 1].endBlock,
+                    "Last vote unfinished");
+        }
+
         require(_startBlock > 0, "requires valid start block");
         require(_endBlock > _startBlock &&
             _endBlock <= _startBlock + maximumVotingBlocks, "requires valid end block");
@@ -389,19 +399,19 @@ contract Staking is Ownable {
         voteStaking.set(_rewardPerBlock, _startBlock, _endBlock, true);
     }
 
-    function voteProposal(uint256 _index, uint256 _optionIndex) external {
-        uint256 votes = userInfo[votingPoolId][msg.sender].amount;
-        require(votes > 0, "No votes");
+    function voteProposal(uint256 _index, uint256 _optionIndex, uint256 _votes) external {
+        require(_votes <= userInfo[votingPoolId][msg.sender].amount && _votes > 0, "No votes");
 
         Proposal storage proposal = proposals[_index];
         require(block.number >= proposal.startBlock, "Not started");
         require(block.number < proposal.endBlock, "Already ended");
         require(_optionIndex < proposal.optionCount, "Invalid option index");
-        require(proposal.receipts[msg.sender].votes == 0, "Already voted");
 
-        proposal.optionVotes[_optionIndex] = proposal.optionVotes[_optionIndex].add(votes);
+        // NOTE: We allow user to vote for more than one options, and vote for multiple times.
+
+        proposal.optionVotes[_optionIndex] = proposal.optionVotes[_optionIndex].add(_votes);
         proposal.receipts[msg.sender].optionIndex = _optionIndex;
-        proposal.receipts[msg.sender].votes = votes;
+        proposal.receipts[msg.sender].votes = _votes;
 
         // User will get extra rewards before end block, however won't be able to withdraw
         if (proposal.endBlock > userVoteEndBlock[msg.sender]) {
@@ -409,6 +419,15 @@ contract Staking is Ownable {
         }
 
         // Stake to voteStake for extra reward.
-        voteStaking.deposit(msg.sender, votes);
+        voteStaking.deposit(msg.sender, _votes);
+    }
+
+    function getProposalOptionVotes(uint256 _proposalIndex, uint256 _optionIndex) external view returns(uint256) {
+        return proposals[_proposalIndex].optionVotes[_optionIndex];
+    }
+
+    function getProposalReceipt(uint256 _proposalIndex, address _who) external view returns(uint256, uint256) {
+        Receipt storage receipt =  proposals[_proposalIndex].receipts[_who];
+        return (receipt.optionIndex, receipt.votes);
     }
 }

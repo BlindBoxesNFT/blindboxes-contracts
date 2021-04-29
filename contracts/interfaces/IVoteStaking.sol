@@ -18,4 +18,6 @@ interface IVoteStaking {
     function withdraw(address _who) external returns(uint256);
 
     function claim(address _who) external returns(uint256);
+
+    function getUserStakedAmount(address _who) external view returns(uint256);
 }
