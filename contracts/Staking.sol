@@ -304,6 +304,11 @@ contract Staking is Ownable {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
 
+        if (address(pool.token) == address(blesToken)) {
+            uint256 balance = blesToken.balanceOf(address(this));
+            require(balance.sub(_amount) >= pool.totalBalance, "Only claim rewards");
+        }
+
         uint256 extra = 0;
         if (_pid == votingPoolId) {
             extra = voteStaking.claim(msg.sender);
@@ -331,6 +336,11 @@ contract Staking is Ownable {
     function claimLater(uint256 _pid, uint256 _amount) external {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
+
+        if (address(pool.token) == address(blesToken)) {
+            uint256 balance = blesToken.balanceOf(address(this));
+            require(balance.sub(_amount) >= pool.totalBalance, "Only claim rewards");
+        }
 
         uint256 extra = 0;
         if (_pid == votingPoolId) {

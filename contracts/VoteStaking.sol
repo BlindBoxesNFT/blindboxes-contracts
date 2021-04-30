@@ -205,6 +205,8 @@ contract VoteStaking is Ownable, IVoteStaking {
             PER_SHARE_SIZE).sub(user.rewardDebt);
         uint256 rewardTotal = user.rewardAmount.add(pending);
 
+        uint256 balance = blesToken.balanceOf(address(this));
+        require(balance.sub(rewardTotal) >= poolInfo.totalBalance, "Only claim rewards");
         blesToken.transfer(_who, rewardTotal);
 
         user.rewardAmount = 0;
