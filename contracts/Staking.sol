@@ -81,17 +81,13 @@ contract Staking is Ownable {
         // optionIndex => count
         mapping (uint256 => uint256) optionVotes;
 
-        // who => Receipt
-        mapping (address => Receipt) receipts;
-    }
-
-    // Receipt record for a voter
-    struct Receipt {
-        uint256 optionIndex;
-        uint256 votes;
+        // who => optionIndex => count
+        mapping (address => mapping (uint256 => uint256)) userOptionVotes;
     }
 
     Proposal[] public proposals;
+
+    event Vote(address indexed user, uint256 indexed proposalIndex, uint256 optionIndex, uint256 votes);
 
     // who => block number
     mapping(address => uint256) public userVoteEndBlock;
@@ -276,7 +272,10 @@ contract Staking is Ownable {
             require(block.number >= userVoteEndBlock[msg.sender] ||
                     user.amount.sub(voteStaking.getUserStakedAmount(msg.sender)) >= _amount,
                     "Withdraw more than staked - locked");
-            voteStaking.withdraw(msg.sender);
+
+            if (block.number >= userVoteEndBlock[msg.sender]) {
+                voteStaking.withdraw(msg.sender);
+            }
         } else {
             require(user.amount >= _amount, "Withdraw more than staked");
         }
@@ -354,7 +353,7 @@ contract Staking is Ownable {
         user.rewardAmount = rewardTotal.sub(_amount);
         user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(PER_SHARE_SIZE);
 
-        emit ClaimLater(msg.sender, _pid, rewardTotal, claimRequestMap[msg.sender].length.sub(1));
+        emit ClaimLater(msg.sender, _pid, _amount, claimRequestMap[msg.sender].length.sub(1));
     }
 
     function claimLaterReady(uint256 _index) external {
@@ -410,8 +409,7 @@ contract Staking is Ownable {
         // NOTE: We allow user to vote for more than one options, and vote for multiple times.
 
         proposal.optionVotes[_optionIndex] = proposal.optionVotes[_optionIndex].add(_votes);
-        proposal.receipts[msg.sender].optionIndex = _optionIndex;
-        proposal.receipts[msg.sender].votes = _votes;
+        proposal.userOptionVotes[msg.sender][_optionIndex] = proposal.userOptionVotes[msg.sender][_optionIndex].add(_votes);
 
         // User will get extra rewards before end block, however won't be able to withdraw
         if (proposal.endBlock > userVoteEndBlock[msg.sender]) {
@@ -420,14 +418,15 @@ contract Staking is Ownable {
 
         // Stake to voteStake for extra reward.
         voteStaking.deposit(msg.sender, _votes);
+
+        emit Vote(msg.sender, _index, _optionIndex, _votes);
     }
 
     function getProposalOptionVotes(uint256 _proposalIndex, uint256 _optionIndex) external view returns(uint256) {
         return proposals[_proposalIndex].optionVotes[_optionIndex];
     }
 
-    function getProposalReceipt(uint256 _proposalIndex, address _who) external view returns(uint256, uint256) {
-        Receipt storage receipt =  proposals[_proposalIndex].receipts[_who];
-        return (receipt.optionIndex, receipt.votes);
+    function getProposalUserOptionVotes(uint256 _proposalIndex, address _who, uint256 _optionIndex) external view returns(uint256) {
+        return proposals[_proposalIndex].userOptionVotes[_who][_optionIndex];
     }
 }
