@@ -68,6 +68,7 @@ contract Staking is Ownable {
     IVoteStaking public voteStaking;
 
     uint256 public votingPoolId;
+    uint256 public blesPoolId;
 
     uint256 public maximumVotingBlocks = 86400;  // Approximately 3 days in BSC.
 
@@ -129,6 +130,10 @@ contract Staking is Ownable {
     ) external onlyOwner {
         if (_withUpdate) {
             massUpdatePools();
+        }
+
+        if (address(_token) == address(blesToken)) {
+            blesPoolId = poolInfo.length;
         }
 
         poolInfo.push(
@@ -304,9 +309,10 @@ contract Staking is Ownable {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
 
-        if (address(pool.token) == address(blesToken)) {
+        if (address(poolInfo[blesPoolId].token) == address(blesToken)) {
+            // When we have a bles pool, make sure we don't claim user's principle.
             uint256 balance = blesToken.balanceOf(address(this));
-            require(balance.sub(_amount) >= pool.totalBalance, "Only claim rewards");
+            require(balance.sub(_amount) >= poolInfo[blesPoolId].totalBalance, "Only claim rewards");
         }
 
         uint256 extra = 0;
@@ -337,9 +343,10 @@ contract Staking is Ownable {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
 
-        if (address(pool.token) == address(blesToken)) {
+        if (address(poolInfo[blesPoolId].token) == address(blesToken)) {
+            // When we have a bles pool, make sure we don't claim user's principle.
             uint256 balance = blesToken.balanceOf(address(this));
-            require(balance.sub(_amount) >= pool.totalBalance, "Only claim rewards");
+            require(balance.sub(_amount) >= poolInfo[blesPoolId].totalBalance, "Only claim rewards");
         }
 
         uint256 extra = 0;
