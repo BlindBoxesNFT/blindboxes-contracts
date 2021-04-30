@@ -259,9 +259,11 @@ contract Staking is Ownable {
             address(this),
             _amount
         );
+        pool.totalBalance = pool.totalBalance.add(_amount);
 
         user.amount = user.amount.add(_amount);
         user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(PER_SHARE_SIZE);
+
         emit Deposit(msg.sender, _pid, _amount);
     }
 
@@ -291,7 +293,10 @@ contract Staking is Ownable {
 
         user.amount = user.amount.sub(_amount);
         user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(PER_SHARE_SIZE);
+
         pool.token.safeTransfer(address(msg.sender), _amount);
+        pool.totalBalance = pool.totalBalance.sub(_amount);
+
         emit Withdraw(msg.sender, _pid, _amount);
     }
 
