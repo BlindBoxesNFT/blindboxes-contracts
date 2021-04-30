@@ -423,6 +423,11 @@ contract Staking is Ownable {
         require(block.number < proposal.endBlock, "Already ended");
         require(_optionIndex < proposal.optionCount, "Invalid option index");
 
+        // If user didn't withdraw from an earlier vote yet, do it now so that he don't have any locked in voteStaking.
+        if (userVoteEndBlock[msg.sender] < proposal.startBlock && voteStaking.getUserStakedAmount(msg.sender) > 0) {
+            voteStaking.withdraw(msg.sender);
+        }
+
         // NOTE: We allow user to vote for more than one options, and vote for multiple times.
 
         proposal.optionVotes[_optionIndex] = proposal.optionVotes[_optionIndex].add(_votes);
