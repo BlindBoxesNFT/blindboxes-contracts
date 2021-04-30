@@ -392,7 +392,7 @@ contract Staking is Ownable {
                     "Last vote unfinished");
         }
 
-        require(_startBlock > 0, "requires valid start block");
+        require(_startBlock > block.number, "requires valid start block");
         require(_endBlock > _startBlock &&
             _endBlock <= _startBlock + maximumVotingBlocks, "requires valid end block");
 
