@@ -152,4 +152,60 @@ contract('NFTMaster', ([dev, curator, artist, buyer0, buyer1, feeTo, randomGuy, 
     const curatorNewBalance = await this.baseToken.balanceOf(curator, {from: curator});
     assert.equal(curatorNewBalance.valueOf(), 40e19);  // 34 + 6 = 40
   });
+
+  it('create, add, published and unpublished', async () => {
+    // Curator create an empty collection, charges 10% commission.
+    await this.nftMaster.createCollection("Art gallery", 4, 1000, false, [artist],  { from: curator });
+    const collectionId = await this.nftMaster.nextCollectionId();
+    assert.equal(collectionId.valueOf(), 1);
+
+    // Add NFTs to collection.
+
+    // 100 USDC
+    await this.mockCat.approve(this.nftMaster.address, 0, {from: curator});
+    await this.nftMaster.addNFTToCollection(this.mockCat.address, 0, collectionId, appendZeroes(1, 20), {from: curator});
+
+    // 200 USDC
+    await this.mockCat.approve(this.nftMaster.address, 1, {from: artist});
+    await this.nftMaster.addNFTToCollection(this.mockCat.address, 1, collectionId, appendZeroes(2, 20), {from: artist});
+
+    // 300 USDC
+    await this.mockDog.approve(this.nftMaster.address, 0, {from: curator});
+    await this.nftMaster.addNFTToCollection(this.mockDog.address, 0, collectionId, appendZeroes(3, 20), {from: curator});
+
+    // 400 USDC
+    await this.mockDog.approve(this.nftMaster.address, 1, {from: artist});
+    await this.nftMaster.addNFTToCollection(this.mockDog.address, 1, collectionId, appendZeroes(3, 20), {from: artist});
+
+    // Remove dog #1.
+    const dog1NFTId = await this.nftMaster.nftIdMap(this.mockDog.address, 1, {from: artist});
+    await this.nftMaster.removeNFTFromCollection(dog1NFTId.valueOf(), collectionId, {from: artist});
+    assert.equal(await this.mockDog.ownerOf(1), artist);
+
+    // Publish
+    await this.nftMaster.publishCollection(1, [linkToken], 0, 0, {from: curator});
+
+    // View the published collection.
+    const collection = await this.nftMaster.allCollections(collectionId, {from: buyer0});
+    assert.equal(collection[0], curator);  // owner
+    assert.equal(collection[1], "Art gallery");  // name
+    assert.equal(collection[2].valueOf(), 3);  // size
+    assert.equal(collection[3].valueOf(), 1000);  // commissionRate
+    assert.equal(collection[4].valueOf(), 0);  // willAcceptBLES
+    assert.equal(collection[5].valueOf(), 6e20);  // totalPrice
+    assert.equal(collection[6].valueOf(), 2e20);  // averagePrice
+    assert.equal(collection[7].valueOf(), 3e19);  // fee
+    assert.equal(collection[8].valueOf(), 6e19);  // commission
+
+    assert.notEqual(collection[9].valueOf(), 0);  // isPublished
+
+    assert.equal(await this.nftMaster.collaborators(collectionId, 0), artist);
+
+    await time.increase(time.duration.days(15));
+
+    await this.nftMaster.unpublishCollection(1, {from: curator});
+    const collection2 = await this.nftMaster.allCollections(collectionId, {from: buyer0});
+    assert.equal(collection2[9].valueOf(), 0);
+    assert.equal(collection2[11].valueOf(), 0);
+  });
 });
