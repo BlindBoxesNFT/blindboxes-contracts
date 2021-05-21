@@ -173,39 +173,56 @@ contract('NFTMaster', ([dev, curator, artist, buyer0, buyer1, feeTo, randomGuy, 
     await this.mockDog.approve(this.nftMaster.address, 0, {from: curator});
     await this.nftMaster.addNFTToCollection(this.mockDog.address, 0, collectionId, appendZeroes(3, 20), {from: curator});
 
-    // 400 USDC
-    await this.mockDog.approve(this.nftMaster.address, 1, {from: artist});
-    await this.nftMaster.addNFTToCollection(this.mockDog.address, 1, collectionId, appendZeroes(3, 20), {from: artist});
-
-    // Remove dog #1.
-    const dog1NFTId = await this.nftMaster.nftIdMap(this.mockDog.address, 1, {from: artist});
-    await this.nftMaster.removeNFTFromCollection(dog1NFTId.valueOf(), collectionId, {from: artist});
-    assert.equal(await this.mockDog.ownerOf(1), artist);
-
     // Publish
     await this.nftMaster.publishCollection(1, [linkToken], 0, 0, {from: curator});
 
     // View the published collection.
     const collection = await this.nftMaster.allCollections(collectionId, {from: buyer0});
-    assert.equal(collection[0], curator);  // owner
-    assert.equal(collection[1], "Art gallery");  // name
-    assert.equal(collection[2].valueOf(), 3);  // size
-    assert.equal(collection[3].valueOf(), 1000);  // commissionRate
-    assert.equal(collection[4].valueOf(), 0);  // willAcceptBLES
-    assert.equal(collection[5].valueOf(), 6e20);  // totalPrice
-    assert.equal(collection[6].valueOf(), 2e20);  // averagePrice
-    assert.equal(collection[7].valueOf(), 3e19);  // fee
-    assert.equal(collection[8].valueOf(), 6e19);  // commission
-
     assert.notEqual(collection[9].valueOf(), 0);  // isPublished
 
     assert.equal(await this.nftMaster.collaborators(collectionId, 0), artist);
 
-    await time.increase(time.duration.days(15));
+    await expectRevert(
+      this.nftMaster.unpublishCollection(collectionId, {from: curator}),
+      'Not expired yet',
+    );
 
-    await this.nftMaster.unpublishCollection(1, {from: curator});
-    const collection2 = await this.nftMaster.allCollections(collectionId, {from: buyer0});
-    assert.equal(collection2[9].valueOf(), 0);
-    assert.equal(collection2[11].valueOf(), 0);
+    // buyer0 buys 1.
+    await this.baseToken.approve(this.nftMaster.address, appendZeroes(2e20), {from: buyer0});
+    await this.nftMaster.drawBoxes(collectionId, 1, {from: buyer0});
+    // buyer1 buys 2.
+    await this.baseToken.approve(this.nftMaster.address, appendZeroes(4e20), {from: buyer1});
+    await this.nftMaster.drawBoxes(collectionId, 1, {from: buyer1});
+
+    await time.increase(time.duration.days(15));
+    await this.nftMaster.unpublishCollection(collectionId, {from: curator});
+    const collectionAfterUnpublished = await this.nftMaster.allCollections(collectionId, {from: buyer0});
+    assert.equal(collectionAfterUnpublished[9].valueOf(), 0);  //isPublished
+    assert.equal(collectionAfterUnpublished[11].valueOf(), 0); //soldCount
+
+    const buy0Balance = await this.baseToken.balanceOf(buyer0, {from: buyer0});
+    assert.equal(buy0Balance.valueOf(), appendZeroes(1, 25));
+    const buy1Balance = await this.baseToken.balanceOf(buyer1, {from: buyer1});
+    assert.equal(buy1Balance.valueOf(), appendZeroes(1, 25));
+
+    // Publish
+    await this.nftMaster.publishCollection(1, [linkToken], 0, 0, {from: curator});
+
+    const publishCollectionSecond = await this.nftMaster.allCollections(collectionId, {from: buyer0});
+    assert.notEqual(publishCollectionSecond[9].valueOf(), 0);  // isPublished
+
+    // buyer0 buys 1.
+    await this.baseToken.approve(this.nftMaster.address, appendZeroes(2e20), {from: buyer0});
+    await this.nftMaster.drawBoxes(collectionId, 1, {from: buyer0});
+    // buyer1 buys 2.
+    await this.baseToken.approve(this.nftMaster.address, appendZeroes(4e20), {from: buyer1});
+    await this.nftMaster.drawBoxes(collectionId, 2, {from: buyer1});
+
+    await time.increase(time.duration.days(15));
+    // sold out
+    await expectRevert(
+      this.nftMaster.unpublishCollection(collectionId, {from: curator}),
+      'Sold out',
+    );
   });
 });
