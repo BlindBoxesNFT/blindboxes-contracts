@@ -32,6 +32,8 @@ contract NFTMaster is Ownable, IERC721Receiver {
     uint256 public linkCost = 1e17;  // 0.1 LINK
     ILinkAccessor public linkAccessor;
 
+    bool public canDrawMultiple = true;
+
     // Platform fee.
     uint256 constant FEE_BASE = 10000;
     uint256 public feeRate = 500;  // 5%
@@ -101,7 +103,6 @@ contract NFTMaster is Ownable, IERC721Receiver {
 
     struct RequestInfo {
         uint256 collectionId;
-        uint256 index;
     }
 
     mapping(bytes32 => RequestInfo) public requestInfoMap;
@@ -114,8 +115,8 @@ contract NFTMaster is Ownable, IERC721Receiver {
     // collectionId => Slot[]
     mapping(uint256 => Slot[]) public slotMap;
 
-    // collectionId => randomnessIndex => r
-    mapping(uint256 => mapping(uint256 => uint256)) public nftMapping;
+    // collectionId => r[]
+    mapping(uint256 => uint256[]) public nftMapping;
 
     uint256 public nftPriceFloor = 1e18;  // 1 USDC
     uint256 public nftPriceCeil = 1e24;  // 1M USDC
@@ -150,6 +151,10 @@ contract NFTMaster is Ownable, IERC721Receiver {
 
     function setLinkCost(uint256 linkCost_) external onlyOwner {
         linkCost = linkCost_;
+    }
+
+    function setCanDrawMultiple(bool value_) external onlyOwner {
+        canDrawMultiple = value_;
     }
 
     function setFeeRate(uint256 feeRate_) external onlyOwner {
@@ -354,6 +359,35 @@ contract NFTMaster is Ownable, IERC721Receiver {
         emit CreateCollection(_msgSender(), collectionId);
     }
 
+    function changeCollaborators(uint256 collectionId_, address[] calldata collaborators_) external {
+        Collection storage collection = allCollections[collectionId_];
+
+        require(collection.owner == _msgSender(), "Needs collection owner");
+        require(!isPublished(collectionId_), "Collection already published");
+
+        uint256 i;
+
+        for (i = 0; i < collaborators_.length; ++i) {
+            isCollaborator[collectionId_][collaborators_[i]] = true;
+        }
+
+        for (i = 0; i < collaborators[collectionId_].length; ++i) {
+            uint256 j;
+            for (j = 0; j < collaborators_.length; ++j) {
+                if (collaborators[collectionId_][i] == collaborators_[j]) {
+                    break;
+                }
+            }
+
+            // If not found.
+            if (j == collaborators_.length) {
+                isCollaborator[collectionId_][collaborators[collectionId_][i]] = false;
+            }
+        }
+
+        collaborators[collectionId_] = collaborators_;
+    }
+
     function isPublished(uint256 collectionId_) public view returns(bool) {
         return allCollections[collectionId_].publishedAt > 0;
     }
@@ -490,13 +524,15 @@ contract NFTMaster is Ownable, IERC721Receiver {
     }
 
     function unpublishCollection(uint256 collectionId_) external {
-        // Anyone can call.
+        // Anyone can call if the collection expires and not sold out.
+        // Owner can unpublish a collection if nothing is sold out.
 
         Collection storage collection = allCollections[collectionId_];
 
-        // Only if the boxes not sold out in maximumDuration, can we unpublish.
-        require(now > collection.publishedAt + maximumDuration, "Not expired yet");
-        require(collection.soldCount < collection.size, "Sold out");
+        if (_msgSender() != collection.owner || collection.soldCount > 0) {
+            require(now > collection.publishedAt + maximumDuration, "Not expired yet");
+            require(collection.soldCount < collection.size, "Sold out");
+        }
 
         collection.publishedAt = 0;
         collection.soldCount = 0;
@@ -544,6 +580,10 @@ contract NFTMaster is Ownable, IERC721Receiver {
     }
 
     function drawBoxes(uint256 collectionId_, uint256 times_) external {
+        if (!canDrawMultiple) {
+            require(times_ == 1, "Can draw only 1");
+        }
+
         Collection storage collection = allCollections[collectionId_];
 
         require(collection.soldCount.add(times_) <= collection.size, "Not enough left");
@@ -582,7 +622,7 @@ contract NFTMaster is Ownable, IERC721Receiver {
         uint256 size = collection.size;
         uint256 count = randomnessCount(size);
 
-        uint256 lastRandomnessIndex = size.sub(1).div(count);
+        uint256 lastRandomnessIndex = nftMapping[collectionId_].length.sub(1);
         uint256 lastR = nftMapping[collectionId_][lastRandomnessIndex];
 
         // Use lastR as an offset for rotating the sequence, to make sure that
@@ -628,10 +668,9 @@ contract NFTMaster is Ownable, IERC721Receiver {
         if (address(linkAccessor) != address(0)) {
             bytes32 requestId = linkAccessor.requestRandomness(index_);
             requestInfoMap[requestId].collectionId = collectionId_;
-            requestInfoMap[requestId].index = index_;
         } else {
             // Uses psuedo random number instead, and doesn't involve request / callback.
-            useRandomness(collectionId_, index_, psuedoRandomness());
+            useRandomness(collectionId_, psuedoRandomness());
         }
     }
 
@@ -642,14 +681,11 @@ contract NFTMaster is Ownable, IERC721Receiver {
         require(_msgSender() == address(linkAccessor), "Only linkAccessor can call");
 
         uint256 collectionId = requestInfoMap[requestId].collectionId;
-        uint256 randomnessIndex = requestInfoMap[requestId].index;
-
-        useRandomness(collectionId, randomnessIndex, randomness);
+        useRandomness(collectionId, randomness);
     }
 
     function useRandomness(
         uint256 collectionId_,
-        uint256 randomnessIndex_,
         uint256 randomness_
     ) private {
         uint256 size = allCollections[collectionId_].size;
@@ -657,30 +693,35 @@ contract NFTMaster is Ownable, IERC721Receiver {
 
         uint256 r;
         uint256 i;
-        uint256 count;
+        uint256 j;
+        uint256 count = randomnessCount(size);
 
-        for (i = 0; i < randomnessIndex_; ++i) {
+        for (i = 0; i < nftMapping[collectionId_].length; ++i) {
             r = nftMapping[collectionId_][i];
-            while (r > 0) {
+            for (j = 0; j < count; ++j) {
                 filled[r.mod(size)] = true;
                 r = r.div(size);
-                count = count.add(1);
             }
         }
 
         r = 0;
 
         uint256 t;
+        uint256 remaining = size.sub(count.mul(nftMapping[collectionId_].length));
 
-        while (randomness_ > 0 && count < size) {
-            t = randomness_.mod(size);
-            randomness_ = randomness_.div(size);
+        for (i = 0; i < count; ++i) {
+            if (remaining == 0) {
+                break;
+            }
 
-            t = t.mod(size.sub(count)).add(1);
+            t = randomness_.mod(remaining);
+            randomness_ = randomness_.div(remaining);
+
+            t = t.add(1);
 
             // Skips filled mappings.
-            for (i = 0; i < size; ++i) {
-                if (!filled[i]) {
+            for (j = 0; j < size; ++j) {
+                if (!filled[j]) {
                     t = t.sub(1);
                 }
 
@@ -689,11 +730,11 @@ contract NFTMaster is Ownable, IERC721Receiver {
                 }
             }
 
-            filled[i] = true;
-            r = r.mul(size).add(i);
-            count = count.add(1);
+            filled[j] = true;
+            r = r.mul(size).add(j);
+            remaining = remaining.sub(1);
         }
 
-        nftMapping[collectionId_][randomnessIndex_] = r;
+        nftMapping[collectionId_].push(r);
     }
 }
