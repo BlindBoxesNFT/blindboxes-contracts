@@ -152,4 +152,77 @@ contract('NFTMaster', ([dev, curator, artist, buyer0, buyer1, feeTo, randomGuy, 
     const curatorNewBalance = await this.baseToken.balanceOf(curator, {from: curator});
     assert.equal(curatorNewBalance.valueOf(), 40e19);  // 34 + 6 = 40
   });
+
+  it('create, add, published and unpublished', async () => {
+    // Curator create an empty collection, charges 10% commission.
+    await this.nftMaster.createCollection("Art gallery", 4, 1000, false, [artist],  { from: curator });
+    const collectionId = await this.nftMaster.nextCollectionId();
+    assert.equal(collectionId.valueOf(), 1);
+
+    // Add NFTs to collection.
+
+    // 100 USDC
+    await this.mockCat.approve(this.nftMaster.address, 0, {from: curator});
+    await this.nftMaster.addNFTToCollection(this.mockCat.address, 0, collectionId, appendZeroes(1, 20), {from: curator});
+
+    // 200 USDC
+    await this.mockCat.approve(this.nftMaster.address, 1, {from: artist});
+    await this.nftMaster.addNFTToCollection(this.mockCat.address, 1, collectionId, appendZeroes(2, 20), {from: artist});
+
+    // 300 USDC
+    await this.mockDog.approve(this.nftMaster.address, 0, {from: curator});
+    await this.nftMaster.addNFTToCollection(this.mockDog.address, 0, collectionId, appendZeroes(3, 20), {from: curator});
+
+    // Publish
+    await this.nftMaster.publishCollection(1, [linkToken], 0, 0, {from: curator});
+
+    // View the published collection.
+    const collection = await this.nftMaster.allCollections(collectionId, {from: buyer0});
+    assert.notEqual(collection[9].valueOf(), 0);  // isPublished
+
+    assert.equal(await this.nftMaster.collaborators(collectionId, 0), artist);
+
+    await expectRevert(
+      this.nftMaster.unpublishCollection(collectionId, {from: curator}),
+      'Not expired yet',
+    );
+
+    // buyer0 buys 1.
+    await this.baseToken.approve(this.nftMaster.address, appendZeroes(2e20), {from: buyer0});
+    await this.nftMaster.drawBoxes(collectionId, 1, {from: buyer0});
+    // buyer1 buys 2.
+    await this.baseToken.approve(this.nftMaster.address, appendZeroes(4e20), {from: buyer1});
+    await this.nftMaster.drawBoxes(collectionId, 1, {from: buyer1});
+
+    await time.increase(time.duration.days(15));
+    await this.nftMaster.unpublishCollection(collectionId, {from: curator});
+    const collectionAfterUnpublished = await this.nftMaster.allCollections(collectionId, {from: buyer0});
+    assert.equal(collectionAfterUnpublished[9].valueOf(), 0);  //isPublished
+    assert.equal(collectionAfterUnpublished[11].valueOf(), 0); //soldCount
+
+    const buy0Balance = await this.baseToken.balanceOf(buyer0, {from: buyer0});
+    assert.equal(buy0Balance.valueOf(), appendZeroes(1, 25));
+    const buy1Balance = await this.baseToken.balanceOf(buyer1, {from: buyer1});
+    assert.equal(buy1Balance.valueOf(), appendZeroes(1, 25));
+
+    // Publish
+    await this.nftMaster.publishCollection(1, [linkToken], 0, 0, {from: curator});
+
+    const publishCollectionSecond = await this.nftMaster.allCollections(collectionId, {from: buyer0});
+    assert.notEqual(publishCollectionSecond[9].valueOf(), 0);  // isPublished
+
+    // buyer0 buys 1.
+    await this.baseToken.approve(this.nftMaster.address, appendZeroes(2e20), {from: buyer0});
+    await this.nftMaster.drawBoxes(collectionId, 1, {from: buyer0});
+    // buyer1 buys 2.
+    await this.baseToken.approve(this.nftMaster.address, appendZeroes(4e20), {from: buyer1});
+    await this.nftMaster.drawBoxes(collectionId, 2, {from: buyer1});
+
+    await time.increase(time.duration.days(15));
+    // sold out
+    await expectRevert(
+      this.nftMaster.unpublishCollection(collectionId, {from: curator}),
+      'Sold out',
+    );
+  });
 });
