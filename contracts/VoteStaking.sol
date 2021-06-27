@@ -8,7 +8,10 @@ import "@openzeppelin/contracts/math/SafeMath.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 import "./interfaces/IVoteStaking.sol";
-import "./tokens/BLES.sol";
+
+interface IStaking {
+  function userInfo(uint256 pid,  address who) external view returns(uint256, uint256, uint256);
+}
 
 // VoteStaking is a small pool that provides extra staking reward, and should be called by Staking.
 contract VoteStaking is Ownable, IVoteStaking {
@@ -40,9 +43,6 @@ contract VoteStaking is Ownable, IVoteStaking {
     // Info of the pool.
     PoolInfo public poolInfo;
 
-    // The bles token
-    BLES public blesToken;
-
     address public stakingAddress;
 
     event Deposit(address indexed user, uint256 amount);
@@ -50,10 +50,8 @@ contract VoteStaking is Ownable, IVoteStaking {
     event Claim(address indexed user, uint256 amount);
 
     constructor(
-        BLES _bles,
         address _stakingAddress
     ) public {
-        blesToken = _bles;
         stakingAddress = _stakingAddress;
     }
 
@@ -141,6 +139,10 @@ contract VoteStaking is Ownable, IVoteStaking {
         require(msg.sender == stakingAddress, "Only staking address can call");
 
         UserInfo storage user = userInfo[_who];
+
+        (uint256 stakingAmount,,) = IStaking(stakingAddress).userInfo(0, _who);
+        require(stakingAmount >= user.amount.add(_amount), "Not enough staking amount");
+
         updatePool();
 
         if (user.amount > 0) {
@@ -152,11 +154,6 @@ contract VoteStaking is Ownable, IVoteStaking {
             user.rewardAmount = user.rewardAmount.add(pending);
         }
 
-        blesToken.transferFrom(
-            _who,
-            address(this),
-            _amount
-        );
         poolInfo.totalBalance = poolInfo.totalBalance.add(_amount);
 
         user.amount = user.amount.add(_amount);
@@ -185,7 +182,6 @@ contract VoteStaking is Ownable, IVoteStaking {
         user.amount = 0;
         user.rewardDebt = 0;
 
-        blesToken.transfer(_who, userAmount);
         poolInfo.totalBalance = poolInfo.totalBalance.sub(userAmount);
 
         emit Withdraw(_who, userAmount);
@@ -204,10 +200,6 @@ contract VoteStaking is Ownable, IVoteStaking {
         uint256 pending = user.amount.mul(poolInfo.accRewardPerShare).div(
             PER_SHARE_SIZE).sub(user.rewardDebt);
         uint256 rewardTotal = user.rewardAmount.add(pending);
-
-        uint256 balance = blesToken.balanceOf(address(this));
-        require(balance.sub(rewardTotal) >= poolInfo.totalBalance, "Only claim rewards");
-        blesToken.transfer(_who, rewardTotal);
 
         user.rewardAmount = 0;
         user.rewardDebt = user.amount.mul(poolInfo.accRewardPerShare).div(PER_SHARE_SIZE);
