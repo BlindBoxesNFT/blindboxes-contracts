@@ -41,17 +41,16 @@ contract('NFTMaster', ([dev, curator, artist, buyer0, buyer1, feeTo, randomGuy, 
     await this.mockDog.mint(curator, 0, { from: dev });
     await this.mockDog.mint(artist, 1, { from: dev });
 
-    // Mock linkAccessor
-    this.linkAccessor = await MockLinkAccessor.new(this.nftMaster.address, { from: dev });
-
     await this.nftMaster.setBaseToken(this.baseToken.address, { from: dev });
     await this.nftMaster.setBlesToken(this.blesToken.address, { from: dev });
     await this.nftMaster.setLinkToken(linkToken, { from: dev });
-    await this.nftMaster.setLinkAccessor(this.linkAccessor.address, { from: dev });
     await this.nftMaster.setFeeTo(feeTo, { from: dev });
   });
 
   it('create, add, and buy with USDC', async () => {
+    this.linkAccessor = await MockLinkAccessor.new(this.nftMaster.address, { from: dev });
+    await this.nftMaster.setLinkAccessor(this.linkAccessor.address, { from: dev });
+
     // Curator create an empty collection, charges 10% commission.
     await this.nftMaster.createCollection("Art gallery", 4, 1000, false, [artist],  { from: curator });
     const collectionId = await this.nftMaster.nextCollectionId();
@@ -264,7 +263,6 @@ contract('NFTMaster', ([dev, curator, artist, buyer0, buyer1, feeTo, randomGuy, 
     assert.equal(await this.nftMaster.collaborators(collectionId, 0), artist);
 
     // Buy and withdraw
-    await this.linkAccessor.setRandomness(11, {from: dev});
 
     // buyer0 buys 40.
     for (let i = 0; i < 40; ++i) {
@@ -276,11 +274,6 @@ contract('NFTMaster', ([dev, curator, artist, buyer0, buyer1, feeTo, randomGuy, 
       await this.baseToken.approve(this.nftMaster.address, appendZeroes(505, 19), {from: buyer1});
       await this.nftMaster.drawBoxes(collectionId, 1, {from: buyer1});
     }
-
-    // Trigger randomness (mock), 3 times
-    await this.linkAccessor.triggerRandomness({from: dev});
-    await this.linkAccessor.triggerRandomness({from: dev});
-    await this.linkAccessor.triggerRandomness({from: dev});
 
     // Check for result.
     let buyer0Count = 0;

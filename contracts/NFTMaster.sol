@@ -45,8 +45,8 @@ contract NFTMaster is Ownable, IERC721Receiver {
 
     IUniswapV2Router02 public router;
 
-    uint256 public nextNFTId;
-    uint256 public nextCollectionId;
+    uint256 public nextNFTId = 1e4;
+    uint256 public nextCollectionId = 1e4;
 
     struct NFT {
         address tokenAddress;
@@ -584,6 +584,8 @@ contract NFTMaster is Ownable, IERC721Receiver {
             require(times_ == 1, "Can draw only 1");
         }
 
+        require(isPublished(collectionId_), "Not published");
+
         Collection storage collection = allCollections[collectionId_];
 
         require(collection.soldCount.add(times_) <= collection.size, "Not enough left");
@@ -601,9 +603,13 @@ contract NFTMaster is Ownable, IERC721Receiver {
         slot.size = times_;
         slotMap[collectionId_].push(slot);
 
+        uint256 startFromIndex = collection.size.sub(collection.timesToCall);
+        if (startFromIndex < collection.soldCount) {
+            startFromIndex = collection.soldCount;
+        }
+
         collection.soldCount = collection.soldCount.add(times_);
 
-        uint256 startFromIndex = collection.size.sub(collection.timesToCall);
         for (uint256 i = startFromIndex;
                  i < collection.soldCount;
                  ++i) {
@@ -630,7 +636,6 @@ contract NFTMaster is Ownable, IERC721Receiver {
         nftIndex_ = nftIndex_.add(lastR).mod(size);
 
         uint256 randomnessIndex = nftIndex_.div(count);
-        randomnessIndex = randomnessIndex.add(lastR).mod(lastRandomnessIndex + 1);
 
         uint256 r = nftMapping[collectionId_][randomnessIndex];
 
