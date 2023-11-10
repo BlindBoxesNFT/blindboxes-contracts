@@ -1,4 +1,4 @@
-# BlindBoxes.io
+# bles.trade
 
 # Testnet Smart Contracts (Rinkeby)
 
